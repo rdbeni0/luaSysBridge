@@ -830,4 +830,23 @@ function luaSysBridge.log_print(msgType, msg)
 	print("> " .. msgType .. " : " .. msg)
 end
 
+--- Wrapper around 'fzf' to select a git commit.
+--- Shows commit refs and titles, lets user pick one.
+--- @return string|nil Selected commit hash or nil if nothing selected.
+function luaSysBridge.fzf_git_select_commit()
+	-- Run git log piped to fzf:
+	local success, _, selection = luaSysBridge.iopopen_stdout_err("git log --date=iso --pretty=format:'%H %ad %s' | fzf --ansi --no-sort --tac")
+	if not success then
+		return nil
+	end
+
+	if selection and #selection > 0 then
+		-- Split string by space in Lua
+		local commit_ref = selection:match("^(%S+)")
+		return commit_ref
+	else
+		return nil
+	end
+end
+
 return luaSysBridge
