@@ -105,6 +105,13 @@ function luaSysBridge.remove(file_path)
 	return os.remove(file_path)
 end
 
+--- Wrapper around os.date.
+--- @param format string Format string for the date (e.g. "%Y-%m-%d").
+--- @return string Current date/time formatted according to the given format.
+function luaSysBridge.date(format)
+	return os.date(format)
+end
+
 --- Removes a symbolic link if it exists.
 --- @param link_path string Path to the symbolic link to remove.
 --- @return boolean|nil true on success; nil plus error message on failure.
