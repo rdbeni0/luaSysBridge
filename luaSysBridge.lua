@@ -16,11 +16,11 @@ local luaSysBridge = {}
 
 --- Executes a system command and normalizes the return values across diffrent Lua versions.
 --- @param cmd string The system command to execute.
---- @return boolean success True if the command executed successfully (exit code == 0), false otherwise (or if the command couldn't run).
---- @return number code The exit code (or error/signal code if applicable).
+--- @return boolean success True if the command executed successfully (exit code == 0), false otherwise.
+--- @return integer|nil code The exit code (or nil if the command couldn't run).
 function luaSysBridge.execute(cmd)
 	-- Execute the system command
-	local result, exit_type, code = os.execute(cmd)
+	local result, _, code = os.execute(cmd)
 
 	-- Check the type of the returned value to adjust for the Lua version:
 	if type(result) == "number" then
@@ -87,14 +87,14 @@ end
 --- @return string|nil Error message when removal failed or directory does not exist.
 function luaSysBridge.remove_dir(dir_path)
 	if luaSysBridge.exists_directory(dir_path) then
-		local success, err = luaSysBridge.execute("rm -rf " .. dir_path)
+		local success, code = luaSysBridge.execute("rm -rf " .. dir_path)
 		if success then
 			return true
 		else
-			return nil, err
+			return nil, "rm failed with exit code " .. tostring(code)
 		end
 	end
-	return nil, "directory does not exists"
+	return nil, "directory does not exist"
 end
 
 --- Wrapper around os.remove.
@@ -107,14 +107,14 @@ end
 
 --- Wrapper around os.date.
 --- @param format string Format string for the date (e.g. "%Y-%m-%d").
---- @return string Current date/time formatted according to the given format.
+--- @return string|osdate Current date/time formatted according to the given format.
 function luaSysBridge.date(format)
 	return os.date(format)
 end
 
 --- Removes a symbolic link if it exists.
 --- @param link_path string Path to the symbolic link to remove.
---- @return boolean|nil true on success; nil plus error message on failure.
+--- @return boolean|nil, string? true on success; nil plus error message on failure.
 function luaSysBridge.unlink(link_path)
 	if luaSysBridge.exists_symlink(link_path) then
 		return luaSysBridge.remove(link_path)
@@ -158,16 +158,16 @@ function luaSysBridge.copy_file(src, dst)
 	end
 
 	-- Open source file for binary read
-	local src_file, err = io.open(src, "rb")
+	local src_file, src_err = io.open(src, "rb")
 	if not src_file then
-		error("Cannot open source file: " .. err)
+		error("Cannot open source file: " .. src_err)
 	end
 
 	-- Open destination file for binary write
-	local dst_file, err = io.open(dst, "wb")
+	local dst_file, dst_err = io.open(dst, "wb")
 	if not dst_file then
 		src_file:close()
-		error("Cannot create destination file: " .. err)
+		error("Cannot create destination file: " .. dst_err)
 	end
 
 	-- Copy content (in chunks)
@@ -203,7 +203,7 @@ function luaSysBridge.copy_file(src, dst)
 		if mode_num then
 			local success = luaSysBridge.execute(string.format("chmod %o %s", mode_num, "'" .. dst:gsub("'", "'\\''") .. "'"))
 			if not success then
-				-- Optionally warn or error; here we ignore failure silently
+				error("ERROR: Could not set permissions!!")
 			end
 		end
 	end
@@ -216,7 +216,7 @@ end
 --- Does not overwrite existing files or symlinks at the destination.
 --- @param src string The source file or directory to symlink.
 --- @param dst string The destination path where the symlink will be created.
---- @return boolean|nil true on success; nil plus error message on failure.
+--- @return boolean|nil, string? true on success; nil plus error message on failure.
 function luaSysBridge.symlink(src, dst)
 	-- Check that the source exists
 	local ok_src = lfs.attributes(src)
@@ -274,7 +274,9 @@ function luaSysBridge.exit(code, close)
 	else
 		code = tonumber(code) or 0 -- Ensure code is a number
 	end
-	close = not (close == false) -- Normalize close to true/false
+
+	-- Normalize close to true/false
+	close = (close ~= false)
 
 	if _VERSION == "Lua 5.1" or _VERSION:match("LuaJIT") then
 		os.exit(code) -- Ignore close, as Lua 5.1 and LuaJIT do not support the second argument (always closes Lua state)
@@ -312,7 +314,7 @@ function luaSysBridge.iopopen_stdout_err(cmd)
 	-- Collect result and exit code
 	local result, code
 	if not is_lua51 then
-		local ok, why, c = pipe:close()
+		local ok, _, c = pipe:close()
 		result = ok or false
 		code = c or 1
 	else
@@ -417,7 +419,7 @@ end
 --- Returns the host name.
 --- @return string hostname Host name without trailing newline.
 function luaSysBridge.get_hostname()
-	local success, code, stdout = luaSysBridge.iopopen_stdout_err("hostname")
+	local success, _, stdout = luaSysBridge.iopopen_stdout_err("hostname")
 	if not success then
 		error("Failed to obtain host name: " .. stdout)
 	end
@@ -434,7 +436,8 @@ function luaSysBridge.pcall_interrupted(main)
 	local status, err = pcall(main)
 	if not status then
 		if err and err ~= "interrupted" and err ~= "interrupted!" then
-			-- in case of Ctrl+C (err as interrupted) do nothing
+			-- in case of Ctrl+C (err as interrupted) do nothing: ignore errors silently
+			return
 		else
 			print("An error occurred: " .. tostring(err))
 		end
@@ -816,7 +819,7 @@ end
 --- If the message type is shorter than 5 characters, spaces are added to align it.
 --- @param msgType string The type or category of the log message (INFO, WARN, ERROR, CMD).
 --- @param msg string The message to print.
---- @return void
+--- @return nil
 function luaSysBridge.log_print(msgType, msg)
 	-- Get the length of msgType
 	local msgTypeLen = string.len(msgType)
