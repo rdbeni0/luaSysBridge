@@ -2,6 +2,9 @@
 -- -*- mode: lua -*-
 -- LUA COMPATIBILITY: LuaJIT, 5.1, 5.2, 5.3, 5.4
 
+-- 631 = "line is too ling (XXX > 120)
+-- luacheck: ignore 631
+
 --- This module provides the core "luaSysBridge" functionality which can be used by other Lua scripts.
 --- It is recommended that all system-level Lua scripts import this module.
 --- Everything has been tested for compatibility with Lua 5.1, 5.2, 5.3, 5.4, and LuaJIT.
