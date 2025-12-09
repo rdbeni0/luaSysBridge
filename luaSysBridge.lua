@@ -115,11 +115,38 @@ end
 --- Removes a symbolic link if it exists.
 --- @param link_path string Path to the symbolic link to remove.
 --- @return boolean|nil, string? true on success; nil plus error message on failure.
-function luaSysBridge.unlink(link_path)
+function luaSysBridge.link_unlink(link_path)
 	if luaSysBridge.exists_symlink(link_path) then
 		return luaSysBridge.remove(link_path)
 	end
 	return nil, "symlink does not exist"
+end
+
+--- Create a symbolic link for a single file or directory on Linux.
+--- Uses the native `ln -s` command and LuaFileSystem for existence checks.
+--- Does not overwrite existing files or symlinks at the destination.
+--- @param src string The source file or directory to symlink.
+--- @param dst string The destination path where the symlink will be created.
+--- @return boolean|nil, string? true on success; nil plus error message on failure.
+function luaSysBridge.link_symlink(src, dst)
+	-- Check that the source exists
+	local ok_src = lfs.attributes(src)
+	if not ok_src then
+		return nil, "Source path does not exist: " .. src
+	end
+
+	-- Check that destination does not exist
+	if lfs.attributes(dst) then
+		return nil, "Destination already exists: " .. dst
+	end
+
+	-- Create symlink using Linux command
+	local result = luaSysBridge.execute(string.format('ln -s "%s" "%s"', src, dst))
+	if result ~= true and result ~= 0 then
+		return nil, "Failed to create symlink: " .. dst
+	end
+
+	return true
 end
 
 --- Wrapper around os.rename.
@@ -206,33 +233,6 @@ function luaSysBridge.copy_file(src, dst)
 				error("ERROR: Could not set permissions!!")
 			end
 		end
-	end
-
-	return true
-end
-
---- Create a symbolic link for a single file or directory on Linux.
---- Uses the native `ln -s` command and LuaFileSystem for existence checks.
---- Does not overwrite existing files or symlinks at the destination.
---- @param src string The source file or directory to symlink.
---- @param dst string The destination path where the symlink will be created.
---- @return boolean|nil, string? true on success; nil plus error message on failure.
-function luaSysBridge.symlink(src, dst)
-	-- Check that the source exists
-	local ok_src = lfs.attributes(src)
-	if not ok_src then
-		return nil, "Source path does not exist: " .. src
-	end
-
-	-- Check that destination does not exist
-	if lfs.attributes(dst) then
-		return nil, "Destination already exists: " .. dst
-	end
-
-	-- Create symlink using Linux command
-	local result = luaSysBridge.execute(string.format('ln -s "%s" "%s"', src, dst))
-	if result ~= true and result ~= 0 then
-		return nil, "Failed to create symlink: " .. dst
 	end
 
 	return true
