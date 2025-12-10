@@ -186,15 +186,16 @@ function luaSysBridge.link_unlink(link_path)
 end
 
 --- Create a symbolic link for a single file or directory on Linux.
---- Uses the native `ln -s` command and LuaFileSystem for existence checks.
---- Does not overwrite existing files or symlinks at the destination.
+--- Uses the native POSIX link() function from luaposix with soft=true (no exec/ln command).
+--- Does not overwrite existing dirs, files or symlinks at the destination.
 --- @param src string The source file or directory to symlink.
 --- @param dst string The destination path where the symlink will be created.
 --- @return boolean|nil, string? true on success; nil plus error message on failure.
 function luaSysBridge.link_symlink(src, dst)
-	-- Check that the source exists
-	local ok_src = lfs.attributes(src)
-	if not ok_src then
+	-- https://luaposix.github.io/luaposix/modules/posix.unistd.html#link
+	local unistd = require("posix.unistd")
+	-- Check that the source exists (using lfs for speed and full compatibility)
+	if not lfs.attributes(src) then
 		return nil, "Source path does not exist: " .. src
 	end
 
@@ -203,13 +204,39 @@ function luaSysBridge.link_symlink(src, dst)
 		return nil, "Destination already exists: " .. dst
 	end
 
-	-- Create symlink using Linux command
-	local result = luaSysBridge.execute(string.format('ln -s "%s" "%s"', src, dst))
-	if result ~= true and result ~= 0 then
-		return nil, "Failed to create symlink: " .. dst
+	-- POSIX link() with soft=true creates the symbolic link
+	-- Returns 0 on success, nil + error on failure
+	local ret, errstr, errnum = unistd.link(src, dst, true)
+	if ret ~= 0 then
+		local err_msg = errstr or "unknown error"
+		error("Failed to create symlink: " .. dst .. " (errstr: " .. err_msg .. ", errnum: " .. errnum .. ")")
 	end
 
 	return true
+
+	-- >>>>>>>>>>>>
+	-- Old implementation -> without LUA POSIX:
+	-- Uses the native `ln -s` command and LuaFileSystem for existence checks.
+	--
+	-- -- Check that the source exists
+	-- local ok_src = lfs.attributes(src)
+	-- if not ok_src then
+	-- 	return nil, "Source path does not exist: " .. src
+	-- end
+
+	-- -- Check that destination does not exist
+	-- if lfs.attributes(dst) then
+	-- 	return nil, "Destination already exists: " .. dst
+	-- end
+
+	-- -- Create symlink using Linux command
+	-- local result = luaSysBridge.execute(string.format('ln -s "%s" "%s"', src, dst))
+	-- if result ~= true and result ~= 0 then
+	-- 	return nil, "Failed to create symlink: " .. dst
+	-- end
+
+	-- return true
+	-- <<<<<<<<<<<<
 end
 
 --- Wrapper around os.rename.
