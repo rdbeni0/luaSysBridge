@@ -780,7 +780,7 @@ function luaSysBridge.exists_directory(path)
 end
 
 --- Check whether a path is a symbolic link (Linux/Unix only).
---- Uses the external shell "test -L" command.
+--- Uses LUAPOSIX to check.
 --- This function validates its argument and raises an error for invalid input.
 --- @param path string Non-empty file system path to check.
 --- @return boolean True if the path is a symbolic link, false otherwise.
@@ -790,14 +790,31 @@ function luaSysBridge.exists_symlink(path)
 		error("Invalid path: expected a non-empty string")
 	end
 
-	-- Escape path to handle spaces and special characters.
-	-- Use single quotes and escape single quotes inside the path.
-	local escaped_path = "'" .. path:gsub("'", "'\\''") .. "'"
-	local cmd = "test -L " .. escaped_path
+	local sys_stat = require("posix.sys.stat")
+	-- lstat returns nil on error, table on success
+	local st = sys_stat.lstat(path)
+	if not st then
+		-- If the file does not exist or is inaccessible, it cannot be a symlink
+		return false
+	end
 
-	-- Execute the test command; success == true means path is a symlink.
-	local success, _ = luaSysBridge.execute(cmd)
-	return success
+	-- S_ISLNK returns non-zero if true, so compare to 0:
+	-- "int non-zero if mode represents a symbolic link"
+	return sys_stat.S_ISLNK(st.st_mode) ~= 0
+
+	-- >>>>>>>>>>>>
+	-- Old implementation -> without LUA POSIX:
+	-- Uses the external shell "test -L" command.
+	--
+	-- -- Escape path to handle spaces and special characters.
+	-- -- Use single quotes and escape single quotes inside the path.
+	-- local escaped_path = "'" .. path:gsub("'", "'\\''") .. "'"
+	-- local cmd = "test -L " .. escaped_path
+
+	-- -- Execute the test command; success == true means path is a symlink.
+	-- local success, _ = luaSysBridge.execute(cmd)
+	-- return success
+	-- <<<<<<<<<<<<
 end
 
 --- Performs a file or directory name search inside `dir` using a glob-like `pattern_base`.
