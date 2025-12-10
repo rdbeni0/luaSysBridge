@@ -11,8 +11,11 @@
 --- Wrapper functions have been implemented to ensure backward/forward compatibility for essential operations.
 --- When a new version of Lua is released, this module should be reviewed (e.g., with AI assistance) and updated to align with the latest standards if necessary.
 --- Backward and forward compatibility must always be preserved, especially for Lua 5.1 and LuaJIT.
+---
+--- The module also uses below dependancies:
+--- LUAPOSIX : https://luaposix.github.io/luaposix/index.html
+--- LuaFileSystem : https://lunarmodules.github.io/luafilesystem/manual.html
 
---- https://lunarmodules.github.io/luafilesystem/manual.html
 local lfs = require("lfs")
 
 local luaSysBridge = {}
@@ -419,14 +422,50 @@ function luaSysBridge.which(cmd)
 	return nil
 end
 
---- Returns the host name.
+--- Returns the host name. Uses LUAPOSIX.
 --- @return string hostname Host name without trailing newline.
 function luaSysBridge.get_hostname()
-	local success, _, stdout = luaSysBridge.iopopen_stdout_err("hostname")
-	if not success then
-		error("Failed to obtain host name: " .. stdout)
+	-- https://luaposix.github.io/luaposix/modules/posix.sys.utsname.html#uname
+	-- Fields:
+	-- machine string hardware platform name
+	-- nodename string network node name
+	-- release string operating system release level
+	-- sysname string operating system name
+	-- version string operating system version
+	--
+	local utsname = require("posix.sys.utsname")
+	local data, err, errnum = utsname.uname()
+	if data and data.nodename and data.nodename ~= "" then
+		-- strip trailing whitespace/newlines
+		local clean = data.nodename:gsub("[\r\n]+$", "")
+		-- take only first word before any space:
+		-- e.g. "mymachine 5" -> "mymachine"
+		clean = clean:match("^(%S+)")
+		return clean
 	end
-	return (stdout:gsub("\n", ""))
+
+	-- Fallback #1: read /proc/sys/kernel/hostname (Linux-specific)
+	local f = io.open("/proc/sys/kernel/hostname", "r")
+	if f then
+		local hostname = f:read("*l")
+		f:close()
+		if hostname and hostname ~= "" then
+			return hostname:gsub("[\r\n]+$", ""):match("^(%S+)")
+		end
+	end
+
+	-- Fallback #2: read /etc/hostname (common on many Unix systems)
+	f = io.open("/etc/hostname", "r")
+	if f then
+		local hostname = f:read("*l")
+		f:close()
+		if hostname and hostname ~= "" then
+			return hostname:gsub("[\r\n]+$", ""):match("^(%S+)")
+		end
+	end
+
+	-- If all methods fail
+	error('Failed to obtain host name using "posix.sys.utsname" or fallback files: ' .. err .. "  errnum: " .. errnum)
 end
 
 --- Execute a main function protected with pcall and ignore Ctrl+C interrupts.
@@ -461,14 +500,20 @@ function luaSysBridge.ssh_check_connection(ip)
 	end
 end
 
---- Get current working directory: read in the place where the lua script was run.
+--- Get current working directory:
+--- read in the place where the lua script was run (but not the location of the script).
 --- Doesn't work with lfs.chdir() (which is wrapper around luaSysBridge.chdir()).
 --- Only the path where the script was run will always be returned.
---- Returns the value of the PWD environment variable when available.
---- Falls back to calling the system `pwd` command if PWD is not set.
+--- Uses LUAPOSIX. Falls back to the value of the PWD environment variable when available.
+--- And then falls back to calling the system `pwd` command if PWD env is not set.
 --- @return string current working directory path or "." when unknown
 function luaSysBridge.pwd_os_pwd()
-	local path = os.getenv("PWD")
+	local path
+	local unistd = require("posix.unistd")
+	path = unistd.getcwd()
+	if not path then
+		path = os.getenv("PWD")
+	end
 	if not path then
 		local p = io.popen("pwd")
 		if p then
