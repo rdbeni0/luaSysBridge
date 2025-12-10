@@ -2,7 +2,8 @@
 -- -*- mode: lua -*-
 -- LUA COMPATIBILITY: LuaJIT, 5.1, 5.2, 5.3, 5.4
 
--- 631 = "line is too ling (XXX > 120)
+-- https://luacheck.readthedocs.io/en/stable/warnings.html
+-- 631 = warning "line is too long (XXX > 120)
 -- luacheck: ignore 631
 
 --- This module provides the core "luaSysBridge" functionality which can be used by other Lua scripts.
@@ -12,7 +13,7 @@
 --- When a new version of Lua is released, this module should be reviewed (e.g., with AI assistance) and updated to align with the latest standards if necessary.
 --- Backward and forward compatibility must always be preserved, especially for Lua 5.1 and LuaJIT.
 ---
---- The module also uses below dependancies:
+--- The module also uses below dependencies:
 --- LUAPOSIX : https://luaposix.github.io/luaposix/index.html
 --- LuaFileSystem : https://lunarmodules.github.io/luafilesystem/manual.html
 
@@ -550,6 +551,17 @@ function luaSysBridge.get_hostname()
 
 	-- If all methods fail
 	error('Failed to obtain host name using "posix.sys.utsname" or fallback files: ' .. err .. "  errnum: " .. errnum)
+
+	-- >>>>>>>>>>>>
+	-- Old implementation -> without LUA POSIX:
+	-- Uses the system `hostname` command.
+	--
+	-- local success, _, stdout = luaSysBridge.iopopen_stdout_err("hostname")
+	-- if not success then
+	-- 	error("Failed to obtain host name: " .. stdout)
+	-- end
+	-- return (stdout:gsub("\n", ""))
+	-- <<<<<<<<<<<<
 end
 
 --- Execute a main function protected with pcall and ignore Ctrl+C interrupts.
@@ -589,7 +601,6 @@ end
 --- Doesn't work with lfs.chdir() (which is wrapper around luaSysBridge.chdir()).
 --- Only the path where the script was run will always be returned.
 --- Uses LUAPOSIX. Falls back to the value of the PWD environment variable when available.
---- And then falls back to calling the system `pwd` command if PWD env is not set.
 --- @return string current working directory path or "." when unknown
 function luaSysBridge.pwd_os_pwd()
 	local path
@@ -598,14 +609,19 @@ function luaSysBridge.pwd_os_pwd()
 	if not path then
 		path = os.getenv("PWD")
 	end
-	if not path then
-		local p = io.popen("pwd")
-		if p then
-			path = p:read("*l")
-			p:close()
-		end
-	end
 	return path or "."
+
+	-- >>>>>>>>>>>>
+	-- Old implementation -> without LUA POSIX:
+	-- Uses the system `pwd` command if required.
+	-- if not path then
+	-- 	local p = io.popen("pwd")
+	-- 	if p then
+	-- 		path = p:read("*l")
+	-- 		p:close()
+	-- 	end
+	-- end
+	-- <<<<<<<<<<<<
 end
 
 --- Wrapper around lfs.currentdir().
