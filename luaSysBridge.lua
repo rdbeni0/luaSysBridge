@@ -87,20 +87,77 @@ function luaSysBridge.mkdir(path)
 	return true
 end
 
---- Remove a directory and its contents using command "rm -rf" if the directory exists.
+--- Remove a directory and its contents. Uses LUAPOSIX. Equivalent to "rm -rf".
 --- @param dir_path string Path to the directory to remove.
 --- @return boolean|nil true when directory was removed successfully.
 --- @return string|nil Error message when removal failed or directory does not exist.
 function luaSysBridge.remove_dir(dir_path)
-	if luaSysBridge.exists_directory(dir_path) then
-		local success, code = luaSysBridge.execute("rm -rf " .. dir_path)
-		if success then
-			return true
-		else
-			return nil, "rm failed with exit code " .. tostring(code)
-		end
+	if not luaSysBridge.exists_directory(dir_path) then
+		return nil, "directory does not exist"
 	end
-	return nil, "directory does not exist"
+
+	local unistd = require("posix.unistd")
+	local stat = require("posix.sys.stat")
+	local dirent = require("posix.dirent")
+
+	local function rm_rf(path)
+		local st, err = stat.lstat(path)
+		if not st then
+			return false, ("lstat failed: %s"):format(err or "unknown error")
+		end
+
+		if stat.S_ISDIR(st.st_mode) ~= 0 then
+			-- Directory –> read contents (only names!):
+			local files, err2 = dirent.dir(path)
+			if not files then
+				return false, ("cannot read directory %s: %s"):format(path, err2 or "unknown error")
+			end
+
+			for _, name in ipairs(files) do
+				if name ~= "." and name ~= ".." then
+					local full = path .. "/" .. name
+					local ok, err3 = rm_rf(full)
+					if not ok then
+						return false, err3
+					end
+				end
+			end
+
+			-- Directory is now empty -> remove it
+			if unistd.rmdir(path) ~= 0 then
+				return false, "rmdir failed: " .. path
+			end
+		else
+			-- Regular file, symlink, etc.
+			if unistd.unlink(path) ~= 0 then
+				return false, "unlink failed: " .. path
+			end
+		end
+
+		return true
+	end
+
+	local ok, err = rm_rf(dir_path)
+	if ok then
+		return true
+	else
+		return nil, err
+	end
+
+	-- >>>>>>>>>>>>
+	-- Old implementation -> without LUA POSIX:
+	-- Remove a directory and its contents using command "rm -rf" if the directory exists.
+	--
+	-- if luaSysBridge.exists_directory(dir_path) then
+	-- 	local success, code = luaSysBridge.execute("rm -rf " .. dir_path)
+	-- 	if success then
+	-- 		return true
+	-- 	else
+	-- 		return nil, "rm failed with exit code " .. tostring(code)
+	-- 	end
+	-- end
+	-- return nil, "directory does not exist"
+	-- <<<<<<<<<<<<
 end
 
 --- Wrapper around os.remove.
