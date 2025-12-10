@@ -219,23 +219,10 @@ function luaSysBridge.link_symlink(src, dst)
 	-- Old implementation -> without LUA POSIX:
 	-- Uses the native `ln -s` command and LuaFileSystem for existence checks.
 	--
-	-- -- Check that the source exists
-	-- local ok_src = lfs.attributes(src)
-	-- if not ok_src then
-	-- 	return nil, "Source path does not exist: " .. src
-	-- end
-
-	-- -- Check that destination does not exist
-	-- if lfs.attributes(dst) then
-	-- 	return nil, "Destination already exists: " .. dst
-	-- end
-
-	-- -- Create symlink using Linux command
 	-- local result = luaSysBridge.execute(string.format('ln -s "%s" "%s"', src, dst))
 	-- if result ~= true and result ~= 0 then
 	-- 	return nil, "Failed to create symlink: " .. dst
 	-- end
-
 	-- return true
 	-- <<<<<<<<<<<<
 end
@@ -301,32 +288,70 @@ function luaSysBridge.copy_file(src, dst)
 	src_file:close()
 	dst_file:close()
 
-	-- Copy permissions (chmod, Unix-only)
-	local src_attr = lfs.attributes(src)
-	if src_attr.permissions then
-		-- Parse symbolic permissions string (e.g., "rw-r--r--") to octal number
-		local function parse_permissions(perm)
-			if #perm ~= 9 then
-				return nil
-			end
-			local function bits(s)
-				return (s:find("r") and 4 or 0) + (s:find("w") and 2 or 0) + (s:find("x") and 1 or 0) + (s:find("[sStT]") and 0 or 0)
-			end -- Ignore setuid/sticky for basic chmod
-			return bits(perm:sub(1, 3)) * 64 + bits(perm:sub(4, 6)) * 8 + bits(perm:sub(7, 9))
-		end
+	-- Preserve permissions using pure POSIX call (no chmod command)
+	local posix = require("posix")
 
-		-- chmod via os.execute (Unix only)
-		local perm_str = src_attr.permissions
-		local mode_num = parse_permissions(perm_str)
-		if mode_num then
-			local success = luaSysBridge.execute(string.format("chmod %o %s", mode_num, "'" .. dst:gsub("'", "'\\''") .. "'"))
-			if not success then
-				error("ERROR: Could not set permissions!!")
-			end
+	--
+	-- Alternative implementation for "mode_str":
+	--
+	-- https://luaposix.github.io/luaposix/modules/posix.html#chmod
+	-- Extract permission bits as octal string (e.g., "0644").
+	-- WARNING! Changes in this implementation may break compatibility with different versions of Lua!
+	-- But the following solution has been tested and works satisfactorily:
+	--
+	-- Compatible with Lua 5.1, 5.2, 5.3, 5.4 (no 0o literals needed).
+	-- "mode_str" can have values ​​e.g. "0577", "0755", "0755" etc, and it works fine
+	--
+	-- local sys_stat = require("posix.sys.stat")
+	-- local st = sys_stat.stat(src)
+	-- if st then
+	-- 	local mode_num = st.st_mode % 512
+	-- 	local mode_str = string.format("%04o", mode_num)
+	-- (...)
+	--
+
+	local src_attr = lfs.attributes(src)
+	local mode_str = src_attr.permissions
+
+	if mode_str then
+		-- https://luaposix.github.io/luaposix/modules/posix.html#chmod
+		local ret, err_msg, _ = posix.chmod(dst, mode_str)
+		if ret ~= 0 then
+			error("ERROR: Could not set permissions on destination file: " .. (err_msg or "unknown error"))
 		end
+	else
+		error("ERROR: Could not set permissions on destination file!")
 	end
 
 	return true
+
+	-- >>>>>>>>>>>>
+	-- Old implementation -> without LUA POSIX:
+	-- Uses the native 'chmod' via "os.execute" and copies permissions (chmod, Unix-only) via "lfs.attributes"
+	--
+	-- src_attr = lfs.attributes(src)
+	-- if src_attr.permissions then
+	-- 	-- Parse symbolic permissions string (e.g., "rw-r--r--") to octal number
+	-- 	local function parse_permissions(perm)
+	-- 		if #perm ~= 9 then
+	-- 			return nil
+	-- 		end
+	-- 		local function bits(s)
+	-- 			return (s:find("r") and 4 or 0) + (s:find("w") and 2 or 0) + (s:find("x") and 1 or 0) + (s:find("[sStT]") and 0 or 0)
+	-- 		end -- Ignore setuid/sticky for basic chmod
+	-- 		return bits(perm:sub(1, 3)) * 64 + bits(perm:sub(4, 6)) * 8 + bits(perm:sub(7, 9))
+	-- 	end
+	--
+	-- 	local perm_str = src_attr.permissions
+	-- 	local mode_num = parse_permissions(perm_str)
+	-- 	if mode_num then
+	-- 		local success = luaSysBridge.execute(string.format("chmod %o %s", mode_num, "'" .. dst:gsub("'", "'\\''") .. "'"))
+	-- 		if not success then
+	-- 			error("ERROR: Could not set permissions!!")
+	-- 		end
+	-- 	end
+	-- end
+	-- <<<<<<<<<<<<
 end
 
 --- Wrapper around lfs.chdir().
