@@ -528,7 +528,7 @@ function luaSysBridge.calculate_md5(file_path)
 end
 
 --- Find an executable in PATH (Unix/Linux only).
---- Works like "shutil.which"; returns the absolute path to the executable or nil if not found.
+--- Works like `shutil.which`; returns the absolute path to the executable or nil if not found.
 --- @param cmd string Command name to search for.
 --- @return string|nil Absolute path to executable on success; nil if not found or on error.
 function luaSysBridge.which(cmd)
@@ -651,6 +651,277 @@ function luaSysBridge.ssh_check_connection(ip)
 		print("WARNING - SSH CONNECTION NOT WORKING! CHECK SSH! Exit code: " .. tostring(code))
 		luaSysBridge.exit(1)
 	end
+end
+
+--- Parses an OpenSSH-style `~/.ssh/config` file into a Lua table.
+--- Compatible with Lua 5.1–5.4 and LuaJIT.
+--- @param path string [optional] Path to the SSH config file. If nil, defaults to `$HOME/.ssh/config` or `./.ssh/config`.
+--- @return table|nil If success: { global = { ... }, hosts = { { patterns = {...}, config = {...} }, ... } }, nil otherwise
+--- @return nil err Returns nil plus an error message string on failure.
+function luaSysBridge.ssh_table_load_config(path)
+	-- Helper: safe getenv and default to HOME/.ssh/config
+	local getenv = os.getenv
+	local home = getenv and getenv("HOME") or nil
+	local default = (home and (home .. "/.ssh/config")) or ".ssh/config"
+
+	local target = path or default
+
+	-- Utilities
+	local function trim(s)
+		if not s then
+			return s
+		end
+		return (s:gsub("^%s+", ""):gsub("%s+$", ""))
+	end
+
+	local function split_once(s)
+		-- split on first whitespace sequence
+		if not s then
+			return nil, nil
+		end
+		local key, rest = s:match("^%s*([^%s]+)%s*(.*)$")
+		if not key then
+			return nil, nil
+		end
+		rest = rest or ""
+		rest = trim(rest)
+		return key, rest
+	end
+
+	local function unquote(v)
+		if not v then
+			return v
+		end
+		local q = v:match('^"(.*)"$') or v:match("^'(.*)'$")
+		if q then
+			return q
+		end
+		return v
+	end
+
+	-- Normalize path with ~
+	local function expand_tilde(p)
+		if not p then
+			return p
+		end
+		if p:sub(1, 2) == "~/" and home then
+			return home .. p:sub(2)
+		end
+		return p
+	end
+
+	-- Try to expand include globs. Use lfs if available, otherwise try io.popen + shell.
+	local function expand_glob(pattern)
+		if not pattern then
+			return {}
+		end
+		pattern = expand_tilde(pattern)
+
+		-- Quick path: no glob meta-characters -> return single if exists
+		if not pattern:find("[%*%?%[]") then
+			-- simple existence check
+			local f = io.open(pattern, "r")
+			if f then
+				f:close()
+				return { pattern }
+			end
+			return {}
+		end
+
+		-- split into dir + basemode
+		local dir, base = pattern:match("^(.-)/([^/]+)$")
+		if not dir then
+			dir = "."
+			base = pattern
+		end
+		dir = dir == "" and "." or dir
+
+		-- convert shell glob to Lua pattern
+		local function glob_to_lua(pat)
+			-- very small conversion: * -> .*, ? -> ., [..] -> %[%] keep
+			pat = pat:gsub("([%^%$%(%)%%%.%+%-%])", "%%%1") -- escape magic
+			pat = pat:gsub("%%%*", ".*")
+			pat = pat:gsub("%%%?", ".")
+			-- bracket expressions: keep as-is (naive)
+			pat = pat:gsub("%%(%[.-%])", "%1")
+			return "^" .. pat .. "$"
+		end
+		local lua_pat = glob_to_lua(base)
+		local res = {}
+		for entry in lfs.dir(dir) do
+			if entry ~= "." and entry ~= ".." then
+				if entry:match(lua_pat) then
+					table.insert(res, dir .. "/" .. entry)
+				end
+			end
+		end
+		table.sort(res)
+		return res
+	end
+
+	-- Internal: parse a single file
+	local function parse_file(fname, accumulator)
+		local f, err = io.open(fname, "r")
+		if not f then
+			return nil, ("cannot open file: " .. tostring(err or fname))
+		end
+
+		-- table { patterns = {...}, config = {...} }
+		local current_host = nil
+		for rawline in f:lines() do
+			-- Remove any leading or trailing whitespace
+			local line = rawline
+			-- Remove comments: '#' that is not inside quotes - simple heuristic: strip from first unquoted #
+			local i = 1
+			local in_single, in_double = false, false
+			local outchars = {}
+			while i <= #line do
+				local ch = line:sub(i, i)
+				if ch == "'" and not in_double then
+					in_single = not in_single
+				end
+				if ch == '"' and not in_single then
+					in_double = not in_double
+				end
+				if ch == "#" and not in_single and not in_double then
+					break -- stop at comment
+				end
+				table.insert(outchars, ch)
+				i = i + 1
+			end
+			line = table.concat(outchars)
+			line = trim(line)
+			if line ~= "" then
+				-- Handle continuation lines ending with '\'
+				while line:match("\\%s*$") do
+					-- remove trailing backslash
+					line = line:gsub("\\%s*$", "")
+					local cont = f:read("*l")
+					if not cont then
+						break
+					end
+					-- remove comments from continuation similarly
+					local j = 1
+					local ins, ind = false, false
+					local outc = {}
+					while j <= #cont do
+						local ch2 = cont:sub(j, j)
+						if ch2 == "'" and not ind then
+							ins = not ins
+						end
+						if ch2 == '"' and not ins then
+							ind = not ind
+						end
+						if ch2 == "#" and not ins and not ind then
+							break
+						end
+						table.insert(outc, ch2)
+						j = j + 1
+					end
+					cont = trim(table.concat(outc))
+					line = line .. " " .. cont
+				end
+
+				local key, rest = split_once(line)
+				-- skip malformed
+				if key then
+					local lower = key:lower()
+					if lower == "host" then
+						-- Start new host block. 'rest' contains one or more patterns
+						local patterns = {}
+						if rest then
+							for p in rest:gmatch("%S+") do
+								p = unquote(p)
+								table.insert(patterns, p)
+							end
+						end
+						-- finalize previous host if exists
+						if current_host then
+							table.insert(accumulator.hosts, current_host)
+						end
+						current_host = { patterns = patterns, config = {} }
+					elseif lower == "include" then
+						-- Expand include(s) and parse each file immediately
+						-- rest may contain multiple space-separated patterns
+						if rest ~= nil then
+							for pattern in rest:gmatch("%S+") do
+								pattern = unquote(pattern)
+								local files = expand_glob(pattern) or {} -- fallback na pustą tabelę
+								for _, inc in ipairs(files) do
+									parse_file(inc, accumulator) -- ignore returned error for includes
+								end
+							end
+						end
+					else
+						-- Regular option. If inside a Host block, attach to it; otherwise to global.
+						local optname = key
+						local optval = unquote(rest)
+						-- Some directives like 'hostname' may be case-insensitive; preserve original casing but store keys as given.
+						if current_host then
+							-- If option already exists, convert to list to preserve multiple occurrences
+							local cfg = current_host.config
+							if cfg[optname] == nil then
+								cfg[optname] = optval
+							else
+								if type(cfg[optname]) == "table" then
+									table.insert(cfg[optname], optval)
+								else
+									cfg[optname] = { cfg[optname], optval }
+								end
+							end
+						else
+							local g = accumulator.global
+							if g[optname] == nil then
+								g[optname] = optval
+							else
+								if type(g[optname]) == "table" then
+									table.insert(g[optname], optval)
+								else
+									g[optname] = { g[optname], optval }
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+
+		f:close()
+		-- finalize last host
+		if current_host then
+			table.insert(accumulator.hosts, current_host)
+		end
+
+		return true
+	end
+
+	-- accumulator structure
+	local accumulator = { global = {}, hosts = {} }
+
+	-- Expand initial path in case it includes globs or ~
+	local initial_paths = {}
+	if target:find("[%*%?%[]") then
+		initial_paths = expand_glob(target)
+		if #initial_paths == 0 then
+			-- if nothing matched, try literal
+			table.insert(initial_paths, target)
+		end
+	else
+		table.insert(initial_paths, expand_tilde(target))
+	end
+
+	-- Parse each file in order
+	for _, fname in ipairs(initial_paths) do
+		local ok, err = parse_file(fname, accumulator)
+		if not ok then
+			return nil, err
+		end
+	end
+
+	-- Provide a convenience helper to lookup host-specific effective config (no pattern matching implementation here)
+	-- The table returned does not attempt to resolve pattern matching; it provides the raw structure.
+	-- If the user wants matching by hostname, they can implement fn that tests patterns (globs) against the target host.
+	return accumulator
 end
 
 --- Get current working directory:
