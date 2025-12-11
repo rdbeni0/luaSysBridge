@@ -1504,4 +1504,74 @@ function luaSysBridge.git_fzf_select_commit(path)
 	end
 end
 
+--- Reset repository to a given commit and perform cleanup.
+--- Runs: git reset --hard <commit_ref>, git reflog expire, git gc.
+--- @param commit_ref string Commit hash to reset to.
+--- @param path string|nil Optional path to a git repository; if provided, changes working directory before running.
+--- @return boolean success True if all commands executed successfully, false otherwise.
+function luaSysBridge.git_reset_and_cleanup(commit_ref, path)
+	-- Validate commit_ref
+	if not commit_ref or #commit_ref == 0 then
+		return false
+	end
+
+	-- Change directory if path is provided
+	if path and #path > 0 then
+		luaSysBridge.chdir(path)
+	end
+
+	local success1 = luaSysBridge.execute("git reset --hard " .. commit_ref)
+	if not success1 then
+		return false
+	end
+
+	local success2 = luaSysBridge.execute("git reflog expire --expire=now --all")
+	if not success2 then
+		return false
+	end
+
+	local success3 = luaSysBridge.execute("git gc --prune=now --aggressive")
+	if not success3 then
+		return false
+	end
+
+	return true
+end
+
+--- Stage all changes and commit with msg1 (timestamp) and optional msg2.
+--- Runs: git add -A ., git commit -m <msg1> -m <msg2>.
+--- @param path string|nil Optional path to a git repository; if provided, changes working directory before running.
+--- @param msg1 string|nil Optional msg1 string; if not provided, defaults to luaSysBridge.date("%Y-%m-%d_%H:%M:%S").
+--- @param msg2 string|nil Optional commit message msg2; if provided, used as the second -m argument.
+--- @return boolean success True if all commands executed successfully, false otherwise.
+function luaSysBridge.git_add_and_commit(path, msg1, msg2)
+	-- Change directory if path is provided
+	if path and #path > 0 then
+		luaSysBridge.chdir(path)
+	end
+
+	-- Stage all changes
+	local success1 = luaSysBridge.execute("git add -A .")
+	if not success1 then
+		return false
+	end
+
+	-- Use provided timestamp or default
+	local msg_or_ts = (msg1 and #msg1 > 0) and msg1 or luaSysBridge.date("%Y-%m-%d_%H:%M:%S")
+
+	local commit_cmd
+	if msg2 and #msg2 > 0 then
+		commit_cmd = 'git commit -m "' .. msg_or_ts .. '" -m "' .. msg2 .. '"'
+	else
+		commit_cmd = 'git commit -m "' .. msg_or_ts .. '"'
+	end
+
+	local success2 = luaSysBridge.execute(commit_cmd)
+	if not success2 then
+		return false
+	end
+
+	return true
+end
+
 return luaSysBridge
