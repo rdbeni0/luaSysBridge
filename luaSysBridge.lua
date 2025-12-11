@@ -1481,8 +1481,14 @@ end
 
 --- Wrapper around 'fzf' to select a git commit.
 --- Shows commit refs and titles, lets user pick one.
+--- @param path string|nil Optional path to a git repository; if provided, changes working directory before running.
 --- @return string|nil Selected commit hash or nil if nothing selected.
-function luaSysBridge.git_fzf_select_commit()
+function luaSysBridge.git_fzf_select_commit(path)
+	-- If path is provided, change directory
+	if path and #path > 0 then
+		luaSysBridge.chdir(path)
+	end
+
 	-- Run git log piped to fzf:
 	local success, _, selection = luaSysBridge.iopopen_stdout_err("git log --date=iso --pretty=format:'%H %ad %s' | fzf --ansi --no-sort --tac")
 	if not success then
@@ -1490,7 +1496,7 @@ function luaSysBridge.git_fzf_select_commit()
 	end
 
 	if selection and #selection > 0 then
-		-- Split string by space in Lua
+		-- Extract commit hash (first non-space sequence)
 		local commit_ref = selection:match("^(%S+)")
 		return commit_ref
 	else
