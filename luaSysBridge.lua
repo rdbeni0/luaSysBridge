@@ -244,6 +244,66 @@ function luaSysBridge.getenv(var_name)
 	return os.getenv(var_name)
 end
 
+--- Change file or dir owner and group. Uses LUAPOSIX:
+--- https://luaposix.github.io/luaposix/modules/posix.unistd.html#chown
+--- Compatible with Lua 5.1–5.4 and LuaJIT.
+--- Accepts both numeric IDs (uid/gid) and symbolic names (e.g. "root", "www-data").
+--- @param path string  Target single file or directory
+--- @param owner string|number|nil  User name or numeric uid. Nil means "do not change"
+--- @param group string|number|nil  Group name or numeric gid. Nil means "do not change"
+--- @return boolean true on success
+--- @return string? error message on failure
+function luaSysBridge.chown(path, owner, group)
+	if type(path) ~= "string" or path == "" then
+		error("Invalid path (must be a non-empty string): " .. tostring(path))
+	end
+
+	local unistd = require("posix.unistd")
+	local pwd = require("posix.pwd")
+	local grp = require("posix.grp")
+
+	-- Resolve owner to uid
+	local uid
+	if owner == nil then
+		uid = -1 -- POSIX: passing -1 means "do not change"
+	elseif type(owner) == "number" then
+		uid = owner
+	elseif type(owner) == "string" then
+		local pw = pwd.getpwnam(owner)
+		if not pw then
+			return false, string.format("Unknown user: %s", owner)
+		end
+		uid = pw.pw_uid
+	else
+		return false, "Invalid owner type (must be number, string or nil)"
+	end
+
+	-- Resolve group to gid
+	local gid
+	if group == nil then
+		gid = -1 -- POSIX: passing -1 means "do not change"
+	elseif type(group) == "number" then
+		gid = group
+	elseif type(group) == "string" then
+		local gr = grp.getgrnam(group)
+		if not gr then
+			return false, string.format("Unknown group: %s", group)
+		end
+		gid = gr.gr_gid
+	else
+		return false, "Invalid group type (must be number, string or nil)"
+	end
+
+	-- execute chown
+	local ret, err_msg = unistd.chown(path, uid, gid)
+
+	if ret ~= 0 then
+		return false, string.format("chown failed on: %s", err_msg or "unknown error")
+	end
+
+	return true
+end
+
 --- Change file/dir permissions. Uses LUAPOSIX:
 --- https://luaposix.github.io/luaposix/modules/posix.html#chmod
 --- Accepts classic notation like 'rwxrwxrwx' (e.g. 'rw-rw-r--').
