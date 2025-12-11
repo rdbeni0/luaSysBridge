@@ -146,7 +146,7 @@ function luaSysBridge.remove_dir(dir_path)
 	end
 
 	-- >>>>>>>>>>>>
-	-- Old implementation -> without LUA POSIX:
+	-- Old implementation -> without LUAPOSIX:
 	-- Remove a directory and its contents using command "rm -rf" if the directory exists.
 	--
 	-- if luaSysBridge.exists_directory(dir_path) then
@@ -216,7 +216,7 @@ function luaSysBridge.link_symlink(src, dst)
 	return true
 
 	-- >>>>>>>>>>>>
-	-- Old implementation -> without LUA POSIX:
+	-- Old implementation -> without LUAPOSIX:
 	-- Uses the native `ln -s` command and LuaFileSystem for existence checks.
 	--
 	-- local result = luaSysBridge.execute(string.format('ln -s "%s" "%s"', src, dst))
@@ -242,6 +242,46 @@ end
 function luaSysBridge.getenv(var_name)
 	-- Currently all versions work the same, but this may change in the future (5.4++)
 	return os.getenv(var_name)
+end
+
+--- Change file/dir permissions. Uses LUAPOSIX:
+--- https://luaposix.github.io/luaposix/modules/posix.html#chmod
+--- Accepts classic notation like 'rwxrwxrwx' (e.g. 'rw-rw-r--').
+--- It should also work with traditional notation: 755,777, etc.
+--- @param path string   single file/directory path
+--- @param mode number|string   Permission mode, e.g. "rw-rw-r--", "755", "755"
+--- @return boolean true on success, false otherwise.
+--- @return string? error message on failure.
+function luaSysBridge.chmod(path, mode)
+	if type(path) ~= "string" or path == "" then
+		error("Invalid path (must be a non-empty string): " .. path)
+	end
+
+	local posix = require("posix")
+
+	if tonumber(mode) then
+		-- add leading "0" if required
+		if mode:sub(1, 1) ~= "0" then
+			mode = "0" .. mode
+		end
+	end
+
+	local ret, err_msg = posix.chmod(path, mode)
+	if ret ~= 0 then
+		return false, string.format("chmod failed on %s: %s", path, err_msg or "unknown error")
+	end
+
+	return true
+
+	-- >>>>>>>>>>>>
+	-- Old implementation -> without LUAPOSIX:
+	-- Uses the native 'chmod' via "os.execute".
+	--
+	-- local success = luaSysBridge.execute(string.format("chmod %o %s", mode, "'" .. path:gsub("'", "'\\''") .. "'"))
+	-- if not success then
+	--     return false, string.format("ERROR: Could not set permissions: %s", path)
+	-- end
+	-- <<<<<<<<<<<<
 end
 
 --- Copies the file from "src" to "dst", preserving content and permissions where possible.
@@ -288,9 +328,6 @@ function luaSysBridge.copy_file(src, dst)
 	src_file:close()
 	dst_file:close()
 
-	-- Preserve permissions using pure POSIX call (no chmod command)
-	local posix = require("posix")
-
 	--
 	-- Alternative implementation for "mode_str":
 	--
@@ -314,9 +351,8 @@ function luaSysBridge.copy_file(src, dst)
 	local mode_str = src_attr.permissions
 
 	if mode_str then
-		-- https://luaposix.github.io/luaposix/modules/posix.html#chmod
-		local ret, err_msg, _ = posix.chmod(dst, mode_str)
-		if ret ~= 0 then
+		local ret, err_msg = luaSysBridge.chmod(dst, mode_str)
+		if not ret then
 			error("ERROR: Could not set permissions on destination file: " .. (err_msg or "unknown error"))
 		end
 	else
@@ -326,7 +362,7 @@ function luaSysBridge.copy_file(src, dst)
 	return true
 
 	-- >>>>>>>>>>>>
-	-- Old implementation -> without LUA POSIX:
+	-- Old implementation -> without LUAPOSIX:
 	-- Uses the native 'chmod' via "os.execute" and copies permissions (chmod, Unix-only) via "lfs.attributes"
 	--
 	-- src_attr = lfs.attributes(src)
@@ -345,10 +381,6 @@ function luaSysBridge.copy_file(src, dst)
 	-- 	local perm_str = src_attr.permissions
 	-- 	local mode_num = parse_permissions(perm_str)
 	-- 	if mode_num then
-	-- 		local success = luaSysBridge.execute(string.format("chmod %o %s", mode_num, "'" .. dst:gsub("'", "'\\''") .. "'"))
-	-- 		if not success then
-	-- 			error("ERROR: Could not set permissions!!")
-	-- 		end
 	-- 	end
 	-- end
 	-- <<<<<<<<<<<<
@@ -578,7 +610,7 @@ function luaSysBridge.get_hostname()
 	error('Failed to obtain host name using "posix.sys.utsname" or fallback files: ' .. err .. "  errnum: " .. errnum)
 
 	-- >>>>>>>>>>>>
-	-- Old implementation -> without LUA POSIX:
+	-- Old implementation -> without LUAPOSIX:
 	-- Uses the system `hostname` command.
 	--
 	-- local success, _, stdout = luaSysBridge.iopopen_stdout_err("hostname")
@@ -637,7 +669,7 @@ function luaSysBridge.pwd_os_pwd()
 	return path or "."
 
 	-- >>>>>>>>>>>>
-	-- Old implementation -> without LUA POSIX:
+	-- Old implementation -> without LUAPOSIX:
 	-- Uses the system `pwd` command if required.
 	-- if not path then
 	-- 	local p = io.popen("pwd")
@@ -928,7 +960,7 @@ function luaSysBridge.exists_symlink(path)
 	return sys_stat.S_ISLNK(st.st_mode) ~= 0
 
 	-- >>>>>>>>>>>>
-	-- Old implementation -> without LUA POSIX:
+	-- Old implementation -> without LUAPOSIX:
 	-- Uses the external shell "test -L" command.
 	--
 	-- -- Escape path to handle spaces and special characters.
