@@ -446,6 +446,99 @@ function luaSysBridge.copy_file(src, dst)
 	-- <<<<<<<<<<<<
 end
 
+--- Recursively copies a directory from "src" to "dst", preserving structure and permissions.
+--- Compatible with Lua 5.1, 5.2, 5.3, 5.4 and LuaJIT.
+--- Uses lfs and LUAPOSIX when required.
+--- When copying, skips symlinks that are not supported and should be handled separately.
+--- @param src string The source directory path (must be a non-empty string).
+--- @param dst string The destination directory path (must be a non-empty string).
+--- @param symlink_quiet boolean [optional] If true, suppresses warnings when symlinks are skipped (default: false).
+--- @return boolean true on success.
+function luaSysBridge.copy_dir(src, dst, symlink_quiet)
+	-- Default symlink_quiet to false if not provided
+	if symlink_quiet == nil then
+		symlink_quiet = false
+	end
+
+	-- Validate input paths
+	if type(src) ~= "string" or src == "" then
+		error("Invalid source path (src)")
+	end
+	if type(dst) ~= "string" or dst == "" then
+		error("Invalid destination path (dst)")
+	end
+
+	-- Verify that src exists and is directory
+	local src_attr = lfs.attributes(src)
+	if not src_attr or src_attr.mode ~= "directory" then
+		error("Source is not a directory: " .. tostring(src))
+	end
+
+	-- Ensure destination directory exists
+	local dst_attr = lfs.attributes(dst)
+	if not dst_attr then
+		local ok, err = luaSysBridge.mkdir(dst)
+		if not ok then
+			error("Cannot create destination directory: " .. tostring(err))
+		end
+	elseif dst_attr.mode ~= "directory" then
+		error("Destination exists and is not a directory: " .. tostring(dst))
+	end
+
+	-- Optional: fetch permission string from source directory
+	local dir_perm = src_attr.permissions
+	if not dir_perm then
+		error("Could not read permissions from source directory.")
+	end
+
+	-- Try to set permissions on destination directory
+	local ok_perm, err_perm = luaSysBridge.chmod(dst, dir_perm)
+	if not ok_perm then
+		error("Failed to set permissions on directory: " .. tostring(err_perm))
+	end
+
+	-- Recursive traversal (symlinks are ignored)
+	for entry in lfs.dir(src) do
+		if entry ~= "." and entry ~= ".." then
+			local src_path = src .. "/" .. entry
+			local dst_path = dst .. "/" .. entry
+
+			local is_link = false
+			local ok_symlink, res_symlink = pcall(luaSysBridge.exists_symlink, src_path)
+			if ok_symlink and res_symlink == true then
+				is_link = true
+			end
+
+			if is_link then
+				-- Skip symlink, optionally print warning
+				if not symlink_quiet then
+					print("WARNING! copy_dir -> symlink skipped: " .. tostring(src_path))
+				end
+			else
+				-- Normal file or directory handling
+				local attr = lfs.attributes(src_path)
+				if not attr then
+					error("Cannot read attributes of: " .. tostring(src_path))
+				end
+
+				if attr.mode == "file" then
+					local ok, err = pcall(luaSysBridge.copy_file, src_path, dst_path)
+					if not ok then
+						error("File copy failed for: " .. src_path .. " -> " .. dst_path .. " :: " .. tostring(err))
+					end
+				elseif attr.mode == "directory" then
+					local ok, err = pcall(luaSysBridge.copy_dir, src_path, dst_path, symlink_quiet)
+					if not ok then
+						error("Directory copy failed for: " .. src_path .. " -> " .. dst_path .. " :: " .. tostring(err))
+					end
+				end
+			end
+		end
+	end
+
+	return true
+end
+
 --- Wrapper around lfs.chdir().
 --- Wraps LuaFileSystem's chdir for future compatibility and consistent API.
 --- Works well with luaSysBridge.pwd_currentdir() (which is wrapper around lfs.currentdir()).
