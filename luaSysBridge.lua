@@ -101,37 +101,55 @@ function luaSysBridge.remove_dir(dir_path)
 	local stat = require("posix.sys.stat")
 	local dirent = require("posix.dirent")
 
-	local function rm_rf(path)
-		local st, err = stat.lstat(path)
-		if not st then
-			return false, ("lstat failed: %s"):format(err or "unknown error")
-		end
+	-- Non-recursive DFS implementation using an explicit stack
+	local function rm_rf(root)
+		-- Stack entries:
+		-- { path = <string>, visited = <boolean> }
+		-- visited=false means: descend into directory first
+		-- visited=true  means: all children processed, remove directory now
+		local stack = { { path = root, visited = false } }
 
-		if stat.S_ISDIR(st.st_mode) ~= 0 then
-			-- Directory –> read contents (only names!):
-			local files, err2 = dirent.dir(path)
-			if not files then
-				return false, ("cannot read directory %s: %s"):format(path, err2 or "unknown error")
+		while #stack > 0 do
+			local node = stack[#stack]
+			local path = node.path
+
+			-- Retrieve file/directory metadata
+			local st, err = stat.lstat(path)
+			if not st then
+				return false, ("lstat failed: %s"):format(err or "unknown error")
 			end
 
-			for _, name in ipairs(files) do
-				if name ~= "." and name ~= ".." then
-					local full = path .. "/" .. name
-					local ok, err3 = rm_rf(full)
-					if not ok then
-						return false, err3
+			-- Directory case
+			if stat.S_ISDIR(st.st_mode) ~= 0 then
+				if not node.visited then
+					-- First time seeing this directory: list contents and push children.
+					node.visited = true
+
+					local files, err2 = dirent.dir(path)
+					if not files then
+						return false, ("cannot read directory %s: %s"):format(path, err2 or "unknown error")
+					end
+
+					-- Push children onto the stack (unvisited)
+					for _, name in ipairs(files) do
+						if name ~= "." and name ~= ".." then
+							local full = path .. "/" .. name
+							stack[#stack + 1] = { path = full, visited = false }
+						end
+					end
+				else
+					-- Children are processed -> remove directory now.
+					stack[#stack] = nil
+					if unistd.rmdir(path) ~= 0 then
+						return false, "rmdir failed: " .. path
 					end
 				end
-			end
-
-			-- Directory is now empty -> remove it
-			if unistd.rmdir(path) ~= 0 then
-				return false, "rmdir failed: " .. path
-			end
-		else
-			-- Regular file, symlink, etc.
-			if unistd.unlink(path) ~= 0 then
-				return false, "unlink failed: " .. path
+			else
+				-- Regular file / symlink / other -> remove immediately.
+				stack[#stack] = nil
+				if unistd.unlink(path) ~= 0 then
+					return false, "unlink failed: " .. path
+				end
 			end
 		end
 
@@ -144,7 +162,6 @@ function luaSysBridge.remove_dir(dir_path)
 	else
 		return nil, err
 	end
-
 	-- >>>>>>>>>>>>
 	-- Old implementation -> without LUAPOSIX:
 	-- Remove a directory and its contents using command "rm -rf" if the directory exists.
