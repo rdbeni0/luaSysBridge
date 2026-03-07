@@ -1415,6 +1415,42 @@ function luaSysBridge.exists_symlink(path)
 	-- <<<<<<<<<<<<
 end
 
+--- Create (if needed) or update a file's timestamps, equivalent to shell "touch".
+--- Uses only Lua standard I/O and LuaFileSystem.
+--- @param path string Path to the file to touch.
+--- @param atime number|nil Optional access time (Unix timestamp). Defaults to current time.
+--- @param mtime number|nil Optional modification time (Unix timestamp). Defaults to atime.
+--- @return boolean success True on success, false otherwise.
+--- @return string|nil err Error message on failure, nil on success.
+function luaSysBridge.touch(path, atime, mtime)
+	if type(path) ~= "string" or path == "" then
+		error("Invalid path (must be a non-empty string): " .. tostring(path))
+	end
+
+	-- If file does not exist, create an empty one using built-in Lua I/O.
+	local attr = lfs.attributes(path, "mode")
+	if not attr then
+		local f, err = io.open(path, "a")
+		if not f then
+			return false, "Cannot create file: " .. tostring(err)
+		end
+		f:close()
+	end
+
+	-- Default times: current time if not provided.
+	local now = os.time()
+	atime = atime or now
+	mtime = mtime or atime
+
+	-- Use LuaFileSystem to set timestamps.
+	local ok, err = lfs.touch(path, atime, mtime)
+	if not ok then
+		return false, "Failed to touch file: " .. tostring(err)
+	end
+
+	return true
+end
+
 --- Performs a file or directory name search inside `dir` using a glob-like `pattern_base`.
 --- Converts `pattern_base` into a Lua pattern by escaping magic characters (except * and ?),
 --- preserving their semantics, and wrapping the pattern with `.*` for partial matches.
