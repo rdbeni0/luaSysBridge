@@ -212,7 +212,7 @@ function luaSysBridge.time(t)
         year = assert(t.year, "time(): missing field 'year'"),
         month = assert(t.month, "time(): missing field 'month'"),
         day = assert(t.day, "time(): missing field 'day'"),
-        hour = t.hour or 12,
+        hour = t.hour or 0,
         min = t.min or 0,
         sec = t.sec or 0,
         isdst = t.isdst,
