@@ -193,6 +193,34 @@ function luaSysBridge.date(format)
     return os.date(format)
 end
 
+--- Wrapper around os.time.
+--- Normalizes input table for compatibility across Lua 5.1–5.4.
+--- @param t? table Table with date fields (year, month, day, hour, min, sec, isdst)
+--- @return number|nil timestamp Unix-like timestamp or nil on error
+function luaSysBridge.time(t)
+    -- No argument -> current time
+    if t == nil then
+        return os.time()
+    end
+
+    if type(t) ~= "table" then
+        return nil, "time(): argument must be a table or nil"
+    end
+
+    -- normalize fields (Lua allows missing ones but behaviour differs per libc)
+    local normalized = {
+        year = assert(t.year, "time(): missing field 'year'"),
+        month = assert(t.month, "time(): missing field 'month'"),
+        day = assert(t.day, "time(): missing field 'day'"),
+        hour = t.hour or 12,
+        min = t.min or 0,
+        sec = t.sec or 0,
+        isdst = t.isdst,
+    }
+
+    return os.time(normalized)
+end
+
 --- Removes a symbolic link if it exists.
 --- @param link_path string Path to the symbolic link to remove.
 --- @return boolean|nil, string? true on success; nil plus error message on failure.
@@ -1438,7 +1466,7 @@ function luaSysBridge.touch(path, atime, mtime)
     end
 
     -- Default times: current time if not provided.
-    local now = os.time()
+    local now = luaSysBridge.time()
     atime = atime or now
     mtime = mtime or atime
 
