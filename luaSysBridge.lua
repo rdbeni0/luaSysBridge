@@ -453,6 +453,12 @@ function luaSysBridge.copy_file(src, dst)
     --
 
     local src_attr = lfs.attributes(src)
+
+    if not src_attr then
+        -- file copy succeeded, but permissions are optional
+        return true
+    end
+
     local mode_str = src_attr.permissions
 
     if mode_str then
