@@ -66,33 +66,35 @@ end
 ---
 --- @param file string Program name or path. If it contains no '/', PATH is searched.
 --- @param args table Argument vector (array of strings). May contain key 0.
---- @return nil, string?, integer? Never returns on success; on failure: nil, errmsg, errnum
+--- @return nil, string, integer Never returns on success; on failure: nil, errmsg, errnum
 function luaSysBridge.execvp(file, args)
     if type(file) ~= "string" or file == "" then
         return nil, "execvp(): file must be a non-empty string"
     end
+
     if type(args) ~= "table" then
         return nil, "execvp(): args must be a table (argument vector)"
     end
 
+    for _, v in pairs(args) do
+        if type(v) ~= "string" then
+            return nil, "execvp(): all args must be strings"
+        end
+    end
+
     -- Ensure there is at least a program name in the argument vector.
-    -- If the table is empty, synthesise a minimal argv using `file`.
     if next(args) == nil then
         args = { file }
     end
 
     local unistd = require("posix.unistd")
 
-    -- posix.unistd.execp(path, argt) performs PATH search (like C execvp / Python os.execvp).
-    -- It never returns on success. On failure it returns nil, errmsg, errnum.
+    -- Performs PATH search like C execvp().
+    -- Never returns on success; on failure returns nil, errmsg, errnum.
     local _, errstr, errnum = unistd.execp(file, args)
 
-    -- If we reach here, the exec failed.
     local errmsg = errstr or "unknown error"
-    if errnum then
-        return nil, string.format("execvp failed for %q: %s (errno %d)", file, errmsg, errnum), errnum
-    end
-    return nil, string.format("execvp failed for %q: %s", file, errmsg)
+    return nil, string.format("execvp failed for %q: %s (errno %d)", file, errmsg, errnum), errnum
 end
 
 --- Create directories recursively, equivalent to the shell command "mkdir -p"
