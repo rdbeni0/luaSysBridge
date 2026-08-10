@@ -49,6 +49,52 @@ function luaSysBridge.execute(cmd)
     end
 end
 
+--- Execute a program, replacing the current process (python os.execvp equivalent).
+--- Uses LUAPOSIX posix.unistd.execp which performs PATH search when `file` contains no slash.
+--- On success this function never returns (the current Lua process is replaced).
+--- On failure it returns nil plus an error message (and optionally errnum).
+--- Compatible with Lua 5.1–5.4 and LuaJIT.
+---
+--- The `args` table is the argument vector passed to the new program.
+--- Conventionally args[1] (or args[0]) should be the program name, matching C/Python argv[0].
+--- Index 0 is supported by luaposix and is preferred when you want explicit control over argv[0].
+---
+--- Example (python-like):
+---   luaSysBridge.execvp("ls", {"ls", "-la", "/tmp"})
+--- Example with explicit argv[0]:
+---   luaSysBridge.execvp("ls", {[0] = "ls", "-la", "/tmp"})
+---
+--- @param file string Program name or path. If it contains no '/', PATH is searched.
+--- @param args table Argument vector (array of strings). May contain key 0.
+--- @return nil, string?, integer? Never returns on success; on failure: nil, errmsg, errnum
+function luaSysBridge.execvp(file, args)
+    if type(file) ~= "string" or file == "" then
+        return nil, "execvp(): file must be a non-empty string"
+    end
+    if type(args) ~= "table" then
+        return nil, "execvp(): args must be a table (argument vector)"
+    end
+
+    -- Ensure there is at least a program name in the argument vector.
+    -- If the table is empty, synthesise a minimal argv using `file`.
+    if next(args) == nil then
+        args = { file }
+    end
+
+    local unistd = require("posix.unistd")
+
+    -- posix.unistd.execp(path, argt) performs PATH search (like C execvp / Python os.execvp).
+    -- It never returns on success. On failure it returns nil, errmsg, errnum.
+    local _, errstr, errnum = unistd.execp(file, args)
+
+    -- If we reach here, the exec failed.
+    local errmsg = errstr or "unknown error"
+    if errnum then
+        return nil, string.format("execvp failed for %q: %s (errno %d)", file, errmsg, errnum), errnum
+    end
+    return nil, string.format("execvp failed for %q: %s", file, errmsg)
+end
+
 --- Create directories recursively, equivalent to the shell command "mkdir -p"
 --- @param path string Directory path to create
 --- @return boolean success true when directory exists or was created successfully, false otherwise
