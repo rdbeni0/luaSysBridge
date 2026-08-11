@@ -1784,4 +1784,590 @@ function luaSysBridge.git_add_and_commit(path, msg1, msg2)
     return true
 end
 
+--- @param file1 string Path to the first file
+--- @param file2 string Path to the second file
+--- @param opts table|nil Options:
+---   context                number  Number of context lines (default: 3)
+---   brief                  boolean Only report whether files differ
+---   ignore_all_space       boolean Ignore all whitespace
+---   ignore_space_change    boolean Ignore changes in whitespace amount
+---   ignore_blank_lines     boolean Ignore blank lines
+---   ignore_case            boolean Ignore case
+---   strip_trailing_cr      boolean Remove trailing CR from every line
+---   ignore_trailing_cr     boolean Alias for strip_trailing_cr
+---   ignore_matching_lines  string  Ignore changes consisting only of
+---                                  lines matching this Lua pattern
+---   minimal                boolean Reserved for compatibility
+---
+--- @return boolean, integer, string
+function luaSysBridge.diff(file1, file2, opts)
+    opts = opts or {}
+
+    local context = tonumber(opts.context) or 3
+    if context < 0 then
+        context = 0
+    end
+
+    local strip_trailing_cr = opts.strip_trailing_cr or opts.ignore_trailing_cr
+
+    local ignore_matching_lines = opts.ignore_matching_lines
+
+    ----------------------------------------------------------------------
+    -- Helpers
+    ----------------------------------------------------------------------
+
+    local function read_lines(path)
+        local f, err = io.open(path, "r")
+        if not f then
+            return nil, err
+        end
+
+        local lines = {}
+
+        for line in f:lines() do
+            if strip_trailing_cr then
+                line = line:gsub("\r$", "")
+            end
+
+            table.insert(lines, line)
+        end
+
+        f:close()
+        return lines
+    end
+
+    local function normalize(line)
+        if opts.ignore_all_space then
+            line = line:gsub("%s+", "")
+        elseif opts.ignore_space_change then
+            line = line:gsub("%s+", " ")
+            line = line:gsub("^%s+", "")
+            line = line:gsub("%s+$", "")
+        end
+
+        if opts.ignore_case then
+            line = line:lower()
+        end
+
+        return line
+    end
+
+    local function is_blank(line)
+        return line:match("^%s*$") ~= nil
+    end
+
+    ----------------------------------------------------------------------
+    -- GNU diff -I-like matching.
+    --
+    -- ignore_matching_lines is a Lua pattern, not a POSIX/PCRE regex.
+    -- The pattern must match the entire line.
+    ----------------------------------------------------------------------
+
+    local ignore_pattern
+
+    if ignore_matching_lines then
+        ignore_pattern = "^" .. ignore_matching_lines .. "$"
+    end
+
+    local function matches_ignore_pattern(line)
+        if not ignore_pattern then
+            return false
+        end
+
+        return line:match(ignore_pattern) ~= nil
+    end
+
+    ----------------------------------------------------------------------
+    -- Read files
+    ----------------------------------------------------------------------
+
+    local a, err1 = read_lines(file1)
+    if not a then
+        return false, 2, "diff(): cannot read " .. tostring(file1) .. ": " .. tostring(err1)
+    end
+
+    local b, err2 = read_lines(file2)
+    if not b then
+        return false, 2, "diff(): cannot read " .. tostring(file2) .. ": " .. tostring(err2)
+    end
+
+    ----------------------------------------------------------------------
+    -- Optional blank-line filtering
+    ----------------------------------------------------------------------
+
+    if opts.ignore_blank_lines then
+        local function filter_blank(t)
+            local r = {}
+
+            for _, line in ipairs(t) do
+                if not is_blank(line) then
+                    table.insert(r, line)
+                end
+            end
+
+            return r
+        end
+
+        a = filter_blank(a)
+        b = filter_blank(b)
+    end
+
+    local na = #a
+    local nb = #b
+
+    ----------------------------------------------------------------------
+    -- Build normalized versions for comparison.
+    ----------------------------------------------------------------------
+
+    local na_norm = {}
+    local nb_norm = {}
+
+    for i = 1, na do
+        na_norm[i] = normalize(a[i])
+    end
+
+    for i = 1, nb do
+        nb_norm[i] = normalize(b[i])
+    end
+
+    ----------------------------------------------------------------------
+    -- Myers diff
+    --
+    -- Finds a shortest edit script using O(ND) time.
+    --
+    -- The trace is retained for backtracking, so this implementation
+    -- does not use the linear-space "middle snake" variant.
+    ----------------------------------------------------------------------
+
+    local function myers_diff()
+        local n = na
+        local m = nb
+
+        if n == 0 then
+            local result = {}
+
+            for j = 1, m do
+                table.insert(result, {
+                    "insert",
+                    0,
+                    j,
+                })
+            end
+
+            return result
+        end
+
+        if m == 0 then
+            local result = {}
+
+            for i = 1, n do
+                table.insert(result, {
+                    "delete",
+                    i,
+                    0,
+                })
+            end
+
+            return result
+        end
+
+        local max = n + m
+        local offset = max + 1
+
+        local v = {}
+        v[offset] = 0
+
+        local trace = {}
+        local final_d
+
+        for d = 0, max do
+            local v_next = {}
+
+            for k = -d, d, 2 do
+                local k_index = k + offset
+                local x
+
+                if k == -d then
+                    x = v[k_index + 1] or 0
+                elseif k == d then
+                    x = (v[k_index - 1] or 0) + 1
+                else
+                    local down = v[k_index + 1] or 0
+                    local right = (v[k_index - 1] or 0) + 1
+
+                    if right > down then
+                        x = right
+                    else
+                        x = down
+                    end
+                end
+
+                local y = x - k
+
+                while x < n and y < m and na_norm[x + 1] == nb_norm[y + 1] do
+                    x = x + 1
+                    y = y + 1
+                end
+
+                v_next[k_index] = x
+
+                if x >= n and y >= m then
+                    trace[d] = v_next
+                    final_d = d
+                    break
+                end
+            end
+
+            if final_d then
+                break
+            end
+
+            trace[d] = v_next
+            v = v_next
+        end
+
+        ------------------------------------------------------------------
+        -- Backtrack
+        ------------------------------------------------------------------
+
+        local script = {}
+
+        local x = n
+        local y = m
+
+        for d = final_d, 1, -1 do
+            local previous = trace[d - 1]
+
+            local k = x - y
+            local k_index = k + offset
+
+            local prev_k
+
+            if k == -d or (k ~= d and (previous[k_index - 1] or 0) < (previous[k_index + 1] or 0)) then
+                -- Insertion.
+                prev_k = k + 1
+            else
+                -- Deletion.
+                prev_k = k - 1
+            end
+
+            local prev_x = previous[prev_k + offset] or 0
+
+            local prev_y = prev_x - prev_k
+
+            ----------------------------------------------------------------
+            -- Consume equal lines along the diagonal.
+            ----------------------------------------------------------------
+
+            while x > prev_x and y > prev_y do
+                table.insert(script, 1, {
+                    "equal",
+                    x,
+                    y,
+                })
+
+                x = x - 1
+                y = y - 1
+            end
+
+            ----------------------------------------------------------------
+            -- Consume the actual edit.
+            ----------------------------------------------------------------
+
+            if x == prev_x then
+                table.insert(script, 1, {
+                    "insert",
+                    x,
+                    y,
+                })
+
+                y = y - 1
+            else
+                table.insert(script, 1, {
+                    "delete",
+                    x,
+                    y,
+                })
+
+                x = x - 1
+            end
+        end
+
+        ------------------------------------------------------------------
+        -- Remaining prefix.
+        ------------------------------------------------------------------
+
+        while x > 0 and y > 0 do
+            table.insert(script, 1, {
+                "equal",
+                x,
+                y,
+            })
+
+            x = x - 1
+            y = y - 1
+        end
+
+        while x > 0 do
+            table.insert(script, 1, {
+                "delete",
+                x,
+                0,
+            })
+
+            x = x - 1
+        end
+
+        while y > 0 do
+            table.insert(script, 1, {
+                "insert",
+                0,
+                y,
+            })
+
+            y = y - 1
+        end
+
+        return script
+    end
+
+    ----------------------------------------------------------------------
+    -- Generate edit script.
+    ----------------------------------------------------------------------
+
+    local script = myers_diff()
+
+    ----------------------------------------------------------------------
+    -- ignore_matching_lines
+    --
+    -- Ignore a change when every inserted/deleted line in that contiguous
+    -- change matches the supplied Lua pattern.
+    ----------------------------------------------------------------------
+
+    if ignore_pattern then
+        local filtered = {}
+        local p = 1
+
+        while p <= #script do
+            if script[p][1] == "equal" then
+                table.insert(filtered, script[p])
+                p = p + 1
+            else
+                local q = p
+                local all_match = true
+
+                while q <= #script and script[q][1] ~= "equal" do
+                    local op = script[q][1]
+
+                    if op == "delete" then
+                        local index = script[q][2]
+
+                        if not matches_ignore_pattern(a[index]) then
+                            all_match = false
+                        end
+                    elseif op == "insert" then
+                        local index = script[q][3]
+
+                        if not matches_ignore_pattern(b[index]) then
+                            all_match = false
+                        end
+                    end
+
+                    q = q + 1
+                end
+
+                if not all_match then
+                    for k = p, q - 1 do
+                        table.insert(filtered, script[k])
+                    end
+                end
+
+                p = q
+            end
+        end
+
+        script = filtered
+    end
+
+    ----------------------------------------------------------------------
+    -- Determine whether files differ.
+    ----------------------------------------------------------------------
+
+    local has_diff = false
+
+    for _, op in ipairs(script) do
+        if op[1] ~= "equal" then
+            has_diff = true
+            break
+        end
+    end
+
+    ----------------------------------------------------------------------
+    -- Brief mode.
+    ----------------------------------------------------------------------
+
+    if opts.brief then
+        if has_diff then
+            return false, 1, string.format("Files %s and %s differ\n", file1, file2)
+        end
+
+        return true, 0, ""
+    end
+
+    if not has_diff then
+        return true, 0, ""
+    end
+
+    ----------------------------------------------------------------------
+    -- Unified diff.
+    ----------------------------------------------------------------------
+
+    local out = {}
+
+    table.insert(out, string.format("--- %s\n", file1))
+    table.insert(out, string.format("+++ %s\n", file2))
+
+    ----------------------------------------------------------------------
+    -- Hunk generation.
+    --
+    -- Hunks separated by <= context equal lines are merged.
+    ----------------------------------------------------------------------
+
+    local h = 1
+
+    while h <= #script do
+        ------------------------------------------------------------------
+        -- Find next change.
+        ------------------------------------------------------------------
+
+        while h <= #script and script[h][1] == "equal" do
+            h = h + 1
+        end
+
+        if h > #script then
+            break
+        end
+
+        local hunk_start = h
+
+        ------------------------------------------------------------------
+        -- Context before.
+        ------------------------------------------------------------------
+
+        local ctx_before = 0
+
+        while hunk_start > 1 and ctx_before < context and script[hunk_start - 1][1] == "equal" do
+            hunk_start = hunk_start - 1
+            ctx_before = ctx_before + 1
+        end
+
+        ------------------------------------------------------------------
+        -- Find end of changes.
+        ------------------------------------------------------------------
+
+        local hunk_end = h
+
+        while hunk_end <= #script and script[hunk_end][1] ~= "equal" do
+            hunk_end = hunk_end + 1
+        end
+
+        ------------------------------------------------------------------
+        -- Context after.
+        --
+        -- If another change is encountered before context is exhausted,
+        -- it becomes part of the same hunk.
+        ------------------------------------------------------------------
+
+        local ctx_after = 0
+
+        while hunk_end <= #script and ctx_after < context and script[hunk_end][1] == "equal" do
+            hunk_end = hunk_end + 1
+            ctx_after = ctx_after + 1
+        end
+
+        hunk_end = hunk_end - 1
+
+        ------------------------------------------------------------------
+        -- Calculate old/new ranges.
+        ------------------------------------------------------------------
+
+        local old_start
+        local old_count = 0
+
+        local new_start
+        local new_count = 0
+
+        for k = hunk_start, hunk_end do
+            local op, oi, nj = script[k][1], script[k][2], script[k][3]
+
+            if op == "equal" or op == "delete" then
+                if not old_start then
+                    old_start = oi
+                end
+
+                old_count = old_count + 1
+            end
+
+            if op == "equal" or op == "insert" then
+                if not new_start then
+                    new_start = nj
+                end
+
+                new_count = new_count + 1
+            end
+        end
+
+        if not old_start then
+            old_start = 0
+        end
+
+        if not new_start then
+            new_start = 0
+        end
+
+        ------------------------------------------------------------------
+        -- GNU-style unified range.
+        --
+        -- count == 1:
+        --     -10
+        --
+        -- count ~= 1:
+        --     -10,3
+        --
+        -- This also handles zero-length ranges:
+        --     -0,0
+        ------------------------------------------------------------------
+
+        local function format_range(start, count)
+            if count == 1 then
+                return tostring(start)
+            end
+
+            return string.format("%d,%d", start, count)
+        end
+
+        table.insert(out, string.format("@@ -%s +%s @@\n", format_range(old_start, old_count), format_range(new_start, new_count)))
+
+        ------------------------------------------------------------------
+        -- Emit hunk.
+        ------------------------------------------------------------------
+
+        for k = hunk_start, hunk_end do
+            local op, oi, nj = script[k][1], script[k][2], script[k][3]
+
+            if op == "equal" then
+                table.insert(out, " " .. a[oi] .. "\n")
+            elseif op == "delete" then
+                table.insert(out, "-" .. a[oi] .. "\n")
+            elseif op == "insert" then
+                table.insert(out, "+" .. b[nj] .. "\n")
+            end
+        end
+
+        h = hunk_end + 1
+    end
+
+    return false, 1, table.concat(out)
+end
+
 return luaSysBridge
