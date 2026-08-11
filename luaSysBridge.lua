@@ -320,6 +320,103 @@ function luaSysBridge.link_symlink(src, dst)
     -- <<<<<<<<<<<<
 end
 
+--- Extract the base name of a path (equivalent to the shell command `basename`).
+--- Removes any leading directory components. Optionally removes a trailing SUFFIX
+--- if the resulting base name ends with that suffix.
+--- Matches GNU coreutils / bash behaviour for all common edge cases
+--- (empty path, "/", "//", trailing slashes, ".", "..", etc.).
+--- Compatible with Lua 5.1–5.4 and LuaJIT.
+---
+--- Examples (same results as bash):
+---   basename("/usr/bin/sort")          -> "sort"
+---   basename("include/stdio.h", ".h")  -> "stdio"
+---   basename("/")                      -> "/"
+---   basename("")                       -> ""
+---   basename("a/b/c/")                 -> "c"
+---
+--- @param path string Path from which to extract the base name.
+--- @param suffix string|nil Optional trailing suffix to strip when present.
+--- @return string The base name (never nil).
+function luaSysBridge.basename(path, suffix)
+    if type(path) ~= "string" then
+        path = tostring(path or "")
+    end
+
+    -- Empty path -> empty result (bash behaviour)
+    if path == "" then
+        return ""
+    end
+
+    -- Collapse consecutive trailing slashes, but keep a single "/" for root
+    -- (matches: basename "/" -> "/", basename "//" -> "/", basename "a///" -> "a")
+    local cleaned = path:gsub("/+$", "")
+    if cleaned == "" then
+        return "/"
+    end
+
+    -- Take the last component after the final '/'
+    local base = cleaned:match("([^/]+)$") or cleaned
+
+    -- Optional suffix stripping (only when the whole base ends with it)
+    if type(suffix) == "string" and suffix ~= "" and #base >= #suffix then
+        if base:sub(-#suffix) == suffix then
+            base = base:sub(1, -#suffix - 1)
+        end
+    end
+
+    return base
+end
+
+--- Extract the directory name of a path (equivalent to the shell command `dirname`).
+--- Removes the last non-slash component and any trailing slashes.
+--- If the path contains no '/', returns "." (current directory).
+--- Matches GNU coreutils / bash behaviour for all common edge cases
+--- (empty path, "/", "//", trailing slashes, ".", "..", etc.).
+--- Compatible with Lua 5.1–5.4 and LuaJIT.
+---
+--- Examples (same results as bash):
+---   dirname("/usr/bin/")     -> "/usr"
+---   dirname("stdio.h")       -> "."
+---   dirname("/")             -> "/"
+---   dirname("")              -> "."
+---   dirname("a/b/c/")        -> "a/b"
+---   dirname("//")            -> "/"
+---
+--- @param path string Path from which to extract the directory component.
+--- @return string The directory name (never nil).
+function luaSysBridge.dirname(path)
+    if type(path) ~= "string" then
+        path = tostring(path or "")
+    end
+
+    -- Empty path -> "." (bash behaviour)
+    if path == "" then
+        return "."
+    end
+
+    -- Collapse consecutive trailing slashes
+    local cleaned = path:gsub("/+$", "")
+    if cleaned == "" then
+        -- original was only slashes -> root
+        return "/"
+    end
+
+    -- Find the last '/'
+    local dir = cleaned:match("^(.*)/[^/]*$")
+
+    if dir == nil then
+        -- no '/' left -> current directory
+        return "."
+    end
+
+    if dir == "" then
+        -- path was absolute and only one component (e.g. "/a")
+        return "/"
+    end
+
+    return dir
+end
+
 --- Wrapper around os.rename.
 --- @param file_path string Current path of the file.
 --- @param new_file_path string New path for the file.
