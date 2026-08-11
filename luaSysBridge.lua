@@ -320,6 +320,42 @@ function luaSysBridge.link_symlink(src, dst)
     -- <<<<<<<<<<<<
 end
 
+--- Extract the base name of a path (GNU coreutils / bash basename compatible).
+--- Handles trailing slashes, empty path, root, and optional suffix stripping.
+--- Compatible with Lua 5.1–5.4 and LuaJIT.
+---
+--- Examples:
+---   basename("/usr/bin/ls")           -> "ls"
+---   basename("/usr/bin/ls", ".so")    -> "ls"     (no change)
+---   basename("/usr/bin/ls.so", ".so") -> "ls"
+---   basename("/")                     -> "/"
+---   basename("//")                    -> "/"
+---   basename("")                      -> ""
+---   basename("a///")                  -> "a"
+---
+--- @param path string|nil Path to process
+--- @param suffix string|nil Optional suffix to strip if present at the end
+--- @return string Base name
+function luaSysBridge.basename(path, suffix)
+    path = tostring(path or "")
+
+    -- Remove trailing slashes (but keep a single "/" for root)
+    local cleaned = path:gsub("/+$", "")
+    if cleaned == "" then
+        return "/"
+    end
+
+    -- Extract the last component
+    local base = cleaned:match("[^/]*$") or cleaned
+
+    -- Optional suffix stripping (GNU basename behaviour)
+    if suffix and suffix ~= "" and #base >= #suffix and base:sub(-#suffix) == suffix then
+        base = base:sub(1, #base - #suffix)
+    end
+
+    return base
+end
+
 --- Extract the directory name of a path (GNU coreutils / bash dirname compatible).
 --- Handles trailing slashes, empty path, root, and relative paths correctly.
 --- Compatible with Lua 5.1–5.4 and LuaJIT.
