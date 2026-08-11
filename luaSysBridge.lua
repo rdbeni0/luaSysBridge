@@ -1798,6 +1798,14 @@ end
 ---   ignore_matching_lines  string  Ignore changes consisting only of
 ---                                  lines matching this Lua pattern
 ---   minimal                boolean Reserved for compatibility
+---   color                  boolean Enable ANSI colors via the ansicolors
+---                                  module (default: false / off).
+---                                  When enabled:
+---                                    - meta (--- / +++ / @@ headers) → blue
+---                                    - content A (deletions, "-" lines) → red
+---                                    - content B (insertions, "+" lines) → green
+---                                  Context lines (" " prefix) stay uncolored.
+---                                  Requires: local ansicolors = require("ansicolors")
 ---
 --- @return boolean, integer, string
 function luaSysBridge.diff(file1, file2, opts)
@@ -1811,6 +1819,33 @@ function luaSysBridge.diff(file1, file2, opts)
     local strip_trailing_cr = opts.strip_trailing_cr or opts.ignore_trailing_cr
 
     local ignore_matching_lines = opts.ignore_matching_lines
+
+    -- Optional ANSI color support (default: off)
+    local use_color = opts.color == true
+    local ansicolors
+    if use_color then
+        ansicolors = require("ansicolors")
+    end
+
+    -- Color helpers (no-op when color is disabled)
+    local function color_meta(s)
+        if use_color then
+            return ansicolors("%{blue}" .. s)
+        end
+        return s
+    end
+    local function color_a(s) -- content A / deletions
+        if use_color then
+            return ansicolors("%{red}" .. s)
+        end
+        return s
+    end
+    local function color_b(s) -- content B / insertions
+        if use_color then
+            return ansicolors("%{green}" .. s)
+        end
+        return s
+    end
 
     ----------------------------------------------------------------------
     -- Helpers
@@ -2224,8 +2259,8 @@ function luaSysBridge.diff(file1, file2, opts)
 
     local out = {}
 
-    table.insert(out, string.format("--- %s\n", file1))
-    table.insert(out, string.format("+++ %s\n", file2))
+    table.insert(out, color_meta(string.format("--- %s\n", file1)))
+    table.insert(out, color_meta(string.format("+++ %s\n", file2)))
 
     ----------------------------------------------------------------------
     -- Hunk generation.
@@ -2346,7 +2381,7 @@ function luaSysBridge.diff(file1, file2, opts)
             return string.format("%d,%d", start, count)
         end
 
-        table.insert(out, string.format("@@ -%s +%s @@\n", format_range(old_start, old_count), format_range(new_start, new_count)))
+        table.insert(out, color_meta(string.format("@@ -%s +%s @@\n", format_range(old_start, old_count), format_range(new_start, new_count))))
 
         ------------------------------------------------------------------
         -- Emit hunk.
@@ -2358,9 +2393,9 @@ function luaSysBridge.diff(file1, file2, opts)
             if op == "equal" then
                 table.insert(out, " " .. a[oi] .. "\n")
             elseif op == "delete" then
-                table.insert(out, "-" .. a[oi] .. "\n")
+                table.insert(out, color_a("-" .. a[oi] .. "\n"))
             elseif op == "insert" then
-                table.insert(out, "+" .. b[nj] .. "\n")
+                table.insert(out, color_b("+" .. b[nj] .. "\n"))
             end
         end
 
@@ -2372,14 +2407,27 @@ end
 
 --- Tries to copy file A (src) to B (dst), preserving file permissions (via copy_file).
 --- - If dst does not exist -> perform the copy.
---- - If dst exists -> run a diff, show it, and ask the user
+--- - If dst exists -> run a diff with full option support, show it, and ask the user
 ---   whether to overwrite (y/Y/yes -> copy; anything else / <ENTER> -> skip).
 ---
---- @param src string Source file path
---- @param dst string Destination file path
+--- @param src  string Source file path
+--- @param dst  string Destination file path
+--- @param opts table|nil Options passed directly to luaSysBridge.diff():
+---   context                number
+---   brief                  boolean
+---   ignore_all_space       boolean
+---   ignore_space_change    boolean
+---   ignore_blank_lines     boolean
+---   ignore_case            boolean
+---   strip_trailing_cr      boolean
+---   ignore_trailing_cr     boolean
+---   ignore_matching_lines  string
+---   minimal                boolean
+---   color                  boolean Enable ANSI colors
+---
 --- @return boolean true when a copy was performed (or files were identical),
 ---                 false when the user declined the overwrite
-function luaSysBridge.diff_ask_and_copy(src, dst)
+function luaSysBridge.diff_ask_and_copy(src, dst, opts)
     if type(src) ~= "string" or src == "" then
         error("diff_ask_and_copy(): src must be a non-empty string")
     end
@@ -2401,8 +2449,8 @@ function luaSysBridge.diff_ask_and_copy(src, dst)
         return true
     end
 
-    -- Destination exists -> compare
-    local same, _, output = luaSysBridge.diff(src, dst)
+    -- Destination exists -> compare using full diff options
+    local same, _, output = luaSysBridge.diff(src, dst, opts)
 
     if same then
         print("No differences. Nothing to do.")
