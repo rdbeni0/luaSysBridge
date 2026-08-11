@@ -2370,4 +2370,68 @@ function luaSysBridge.diff(file1, file2, opts)
     return false, 1, table.concat(out)
 end
 
+--- Tries to copy file A (src) to B (dst), preserving file permissions (via copy_file).
+--- - If dst does not exist -> perform the copy.
+--- - If dst exists -> run a diff, show it, and ask the user
+---   whether to overwrite (y/Y/yes -> copy; anything else / <ENTER> -> skip).
+---
+--- @param src string Source file path
+--- @param dst string Destination file path
+--- @return boolean true when a copy was performed (or files were identical),
+---                 false when the user declined the overwrite
+function luaSysBridge.diff_ask_and_copy(src, dst)
+    if type(src) ~= "string" or src == "" then
+        error("diff_ask_and_copy(): src must be a non-empty string")
+    end
+    if type(dst) ~= "string" or dst == "" then
+        error("diff_ask_and_copy(): dst must be a non-empty string")
+    end
+
+    print("=================================================")
+    print(string.format("diff %s %s", src, dst))
+
+    -- Destination does not exist -> just copy (permissions preserved by copy_file)
+    if not luaSysBridge.exists_file(dst) then
+        print("Destination does not exist. Copying...")
+        local ok, err = pcall(luaSysBridge.copy_file, src, dst)
+        if not ok then
+            error("diff_ask_and_copy(): copy failed: " .. tostring(err))
+        end
+        print("Done.")
+        return true
+    end
+
+    -- Destination exists -> compare
+    local same, _, output = luaSysBridge.diff(src, dst)
+
+    if same then
+        print("No differences. Nothing to do.")
+        return true
+    end
+
+    -- Show the unified diff (or error message)
+    if output and output ~= "" then
+        io.write(output)
+        if not output:match("\n$") then
+            io.write("\n")
+        end
+    end
+
+    print()
+
+    -- Ask user (default = no / <ENTER>)
+    if luaSysBridge.prompt_y_yes("Files differ. Do you want to overwrite the destination file?") then
+        print("Overwriting file...")
+        local ok, err = pcall(luaSysBridge.copy_file, src, dst)
+        if not ok then
+            error("diff_ask_and_copy(): overwrite failed: " .. tostring(err))
+        end
+        print("Done.")
+        return true
+    else
+        print("Skipping copy.")
+        return false
+    end
+end
+
 return luaSysBridge
