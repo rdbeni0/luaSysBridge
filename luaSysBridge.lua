@@ -1834,15 +1834,19 @@ function luaSysBridge.diff(file1, file2, opts)
         end
         return s
     end
-    local function color_a(s) -- content A / deletions
+
+    -- Content A / deletions are displayed as "+" and green.
+    local function color_a(s)
         if use_color then
-            return ansicolors("%{red}" .. s)
+            return ansicolors("%{green}" .. s)
         end
         return s
     end
-    local function color_b(s) -- content B / insertions
+
+    -- Content B / insertions are displayed as "-" and red.
+    local function color_b(s)
         if use_color then
-            return ansicolors("%{green}" .. s)
+            return ansicolors("%{red}" .. s)
         end
         return s
     end
@@ -2393,9 +2397,13 @@ function luaSysBridge.diff(file1, file2, opts)
             if op == "equal" then
                 table.insert(out, " " .. a[oi] .. "\n")
             elseif op == "delete" then
-                table.insert(out, color_a("-" .. a[oi] .. "\n"))
+                -- Reversed presentation:
+                -- original deletion is displayed as "+" and green.
+                table.insert(out, color_a("+" .. a[oi] .. "\n"))
             elseif op == "insert" then
-                table.insert(out, color_b("+" .. b[nj] .. "\n"))
+                -- Reversed presentation:
+                -- original insertion is displayed as "-" and red.
+                table.insert(out, color_b("-" .. b[nj] .. "\n"))
             end
         end
 
