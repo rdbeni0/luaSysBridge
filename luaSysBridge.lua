@@ -55,17 +55,17 @@ end
 --- On failure it returns nil plus an error message (and optionally errnum).
 --- Compatible with Lua 5.1–5.4 and LuaJIT.
 ---
---- The `args` table is the argument vector passed to the new program.
---- Conventionally args[1] (or args[0]) should be the program name, matching C/Python argv[0].
---- Index 0 is supported by luaposix and is preferred when you want explicit control over argv[0].
+--- Two calling styles are supported:
 ---
---- Example (python-like):
----   luaSysBridge.execvp("ls", {"ls", "-la", "/tmp"})
---- Example with explicit argv[0]:
----   luaSysBridge.execvp("ls", {[0] = "ls", "-la", "/tmp"})
+--- 1. Friendly (recommended):
+---      funsy.execvp("podman", { "run", "--rm", "-it", "image" })
+---
+--- 2. Classic / explicit argv[0] (still works):
+---      funsy.execvp("podman", { [0] = "podman", "run", "--rm", "-it", "image" })
+---      funsy.execvp("podman", { "podman", "run", "--rm", "-it", "image" })
 ---
 --- @param file string Program name or path. If it contains no '/', PATH is searched.
---- @param args table Argument vector (array of strings). May contain key 0.
+--- @param args table Argument vector. May start from the first real argument or contain key 0.
 --- @return nil, string, integer Never returns on success; on failure: nil, errmsg, errnum
 function luaSysBridge.execvp(file, args)
     if type(file) ~= "string" or file == "" then
@@ -82,16 +82,38 @@ function luaSysBridge.execvp(file, args)
         end
     end
 
-    -- Ensure there is at least a program name in the argument vector.
-    if next(args) == nil then
-        args = { file }
+    -- Normalize to a proper argv table that always has index 0
+    local argv = {}
+
+    if args[0] ~= nil then
+        -- User already provided explicit argv[0]
+        for k, v in pairs(args) do
+            argv[k] = v
+        end
+    elseif args[1] == file then
+        -- Classic style: first element is the program name
+        argv[0] = file
+        for i = 2, #args do
+            argv[i - 1] = args[i]
+        end
+    else
+        -- Friendly style (recommended): args are only the real arguments
+        argv[0] = file
+        for i, v in ipairs(args) do
+            argv[i] = v
+        end
+    end
+
+    -- Guarantee at least argv[0]
+    if next(argv) == nil then
+        argv[0] = file
     end
 
     local unistd = require("posix.unistd")
 
     -- Performs PATH search like C execvp().
     -- Never returns on success; on failure returns nil, errmsg, errnum.
-    local _, errstr, errnum = unistd.execp(file, args)
+    local _, errstr, errnum = unistd.execp(file, argv)
 
     local errmsg = errstr or "unknown error"
     return nil, string.format("execvp failed for %q: %s (errno %d)", file, errmsg, errnum), errnum
