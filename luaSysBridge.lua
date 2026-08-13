@@ -948,10 +948,12 @@ function luaSysBridge.get_hostname()
     -- <<<<<<<<<<<<
 end
 
---- Execute a main function protected with pcall and ignore Ctrl+C interrupts.
+--- Execute a main function protected with pcall.
 --- Use `local function main()` and pass that function as the `main` argument.
---- The function dismiss errors equal to "interrupted" or "interrupted!" (typical from Ctrl+C handlers)
---- and prints other errors to stdout.
+--- Errors other than "interrupted" or "interrupted!" are silently dismissed.
+--- Errors equal to "interrupted" or "interrupted!" are printed to stdout.
+--- The function is intended for use with Lua 5.1 interrupt handling,
+--- where Ctrl+C may result in an error with one of these values.
 --- @param main function Function to call under pcall.
 function luaSysBridge.pcall_interrupted(main)
     -- Use `pcall` to handle the error caused by Ctrl+C:
