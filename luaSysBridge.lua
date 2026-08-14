@@ -540,19 +540,24 @@ end
 ---   local key = luaSysBridge.cat("/path/to/secret")
 ---   -- or with multiple files:
 ---   local combined = luaSysBridge.cat({ "part1.txt", "part2.txt" })
+---   -- with trimming (useful for keys / tokens):
+---   local key = luaSysBridge.cat("/path/to/secret", { trim = true })
 ---
 --- @param path_or_paths string|table Single file path, or array of file paths to concatenate
 --- @param opts table|nil Options:
 ---   binary  boolean  Open files in binary mode ("rb") instead of text mode ("r").
 ---                    Default: false (text mode). Use true when reading binary data
----                    or when exact byte-for-byte content (including any newlines)
----                    must be preserved across platforms.
---- @return string|nil content Concatenated file contents on success
+---                    or when exact byte-for-byte content must be preserved.
+---   trim    boolean  Strip leading and trailing whitespace (including newlines)
+---                    from the final concatenated result. Default: false.
+---                    Useful for reading single-line secrets / keys / tokens.
+--- @return string|nil content Concatenated (and optionally trimmed) file contents on success
 --- @return string|nil err     Error message on failure (nil on success)
 function luaSysBridge.cat(path_or_paths, opts)
     opts = opts or {}
 
     local binary = opts.binary == true
+    local trim = opts.trim == true
     local mode = binary and "rb" or "r"
 
     local paths
@@ -561,7 +566,7 @@ function luaSysBridge.cat(path_or_paths, opts)
     elseif type(path_or_paths) == "table" then
         paths = path_or_paths
     else
-        return nil, "cat(): first argument must be a non-empty string or a table of strings"
+        return nil, "cat(): first argument must be a string or a table of strings"
     end
 
     if #paths == 0 then
@@ -595,7 +600,13 @@ function luaSysBridge.cat(path_or_paths, opts)
         table.insert(contents, content)
     end
 
-    return table.concat(contents)
+    local result = table.concat(contents)
+
+    if trim then
+        result = result:match("^%s*(.-)%s*$") or ""
+    end
+
+    return result
 end
 
 --- Change file/dir permissions. Uses LUAPOSIX:
