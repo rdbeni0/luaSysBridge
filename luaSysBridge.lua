@@ -532,6 +532,72 @@ function luaSysBridge.chown(path, owner, group)
     return true
 end
 
+--- Read the contents of one or more files, equivalent to the Unix `cat` command.
+--- Concatenates the contents of all given files in the order provided (no extra separators).
+--- Compatible with Lua 5.1–5.4 and LuaJIT.
+---
+--- Typical usage (shell-like assignment):
+---   local key = luaSysBridge.cat("/path/to/secret")
+---   -- or with multiple files:
+---   local combined = luaSysBridge.cat({ "part1.txt", "part2.txt" })
+---
+--- @param path_or_paths string|table Single file path, or array of file paths to concatenate
+--- @param opts table|nil Options:
+---   binary  boolean  Open files in binary mode ("rb") instead of text mode ("r").
+---                    Default: false (text mode). Use true when reading binary data
+---                    or when exact byte-for-byte content (including any newlines)
+---                    must be preserved across platforms.
+--- @return string|nil content Concatenated file contents on success
+--- @return string|nil err     Error message on failure (nil on success)
+function luaSysBridge.cat(path_or_paths, opts)
+    opts = opts or {}
+
+    local binary = opts.binary == true
+    local mode = binary and "rb" or "r"
+
+    local paths
+    if type(path_or_paths) == "string" then
+        paths = { path_or_paths }
+    elseif type(path_or_paths) == "table" then
+        paths = path_or_paths
+    else
+        return nil, "cat(): first argument must be a non-empty string or a table of strings"
+    end
+
+    if #paths == 0 then
+        return ""
+    end
+
+    local contents = {}
+
+    for _, path in ipairs(paths) do
+        if type(path) ~= "string" or path == "" then
+            return nil, "cat(): all paths must be non-empty strings"
+        end
+
+        -- Prefer explicit regular-file check for clearer errors (consistent with other helpers)
+        if not luaSysBridge.exists_file(path) then
+            return nil, "cat(): file does not exist or is not a regular file: " .. path
+        end
+
+        local f, err = io.open(path, mode)
+        if not f then
+            return nil, "cat(): cannot open " .. path .. ": " .. tostring(err)
+        end
+
+        local content = f:read("*a")
+        f:close()
+
+        if content == nil then
+            return nil, "cat(): cannot read " .. path
+        end
+
+        table.insert(contents, content)
+    end
+
+    return table.concat(contents)
+end
+
 --- Change file/dir permissions. Uses LUAPOSIX:
 --- https://luaposix.github.io/luaposix/modules/posix.html#chmod
 --- Accepts classic notation like 'rwxrwxrwx' (e.g. 'rw-rw-r--').
