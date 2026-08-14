@@ -308,28 +308,28 @@ end
 --- @param dst string The destination path where the symlink will be created.
 --- @return boolean|nil, string? true on success; nil plus error message on failure.
 function luaSysBridge.link_symlink(src, dst)
-    -- https://luaposix.github.io/luaposix/modules/posix.unistd.html#link
     local unistd = require("posix.unistd")
-    -- Check that the source exists (using lfs for speed and full compatibility)
-    if not lfs.attributes(src) then
-        return nil, "Source path does not exist: " .. src
+    local stat = require("posix.sys.stat")
+
+    if type(src) ~= "string" or src == "" then
+        return nil, "Invalid source path"
     end
 
-    -- Check that destination does not exist
-    if lfs.attributes(dst) then
+    if type(dst) ~= "string" or dst == "" then
+        return nil, "Invalid destination path"
+    end
+
+    if stat.lstat(dst) then
         return nil, "Destination already exists: " .. dst
     end
 
-    -- POSIX link() with soft=true creates the symbolic link
-    -- Returns 0 on success, nil + error on failure
     local ret, errstr, errnum = unistd.link(src, dst, true)
+
     if ret ~= 0 then
-        local err_msg = errstr or "unknown error"
-        error("Failed to create symlink: " .. dst .. " (errstr: " .. err_msg .. ", errnum: " .. errnum .. ")")
+        return nil, string.format("Failed to create symlink: %s -> %s (errstr: %s, errnum: %s)", dst, src, errstr or "unknown error", tostring(errnum or "unknown"))
     end
 
     return true
-
     -- >>>>>>>>>>>>
     -- Old implementation -> without LUAPOSIX:
     -- Uses the native `ln -s` command and LuaFileSystem for existence checks.
