@@ -304,7 +304,7 @@ end
 --- Create a symbolic link for a single file or directory on Linux.
 --- Uses the native POSIX link() function from luaposix with soft=true (no exec/ln command).
 --- Does not overwrite existing dirs, files or symlinks at the destination.
---- @param src string The source file or directory to symlink.
+--- @param src string The symlink target. May be absolute or relative to the destination directory.
 --- @param dst string The destination path where the symlink will be created.
 --- @return boolean|nil, string? true on success; nil plus error message on failure.
 function luaSysBridge.link_symlink(src, dst)
@@ -319,6 +319,7 @@ function luaSysBridge.link_symlink(src, dst)
         return nil, "Invalid destination path"
     end
 
+    -- lstat() checks the destination itself, including dangling symlinks.
     if stat.lstat(dst) then
         return nil, "Destination already exists: " .. dst
     end
