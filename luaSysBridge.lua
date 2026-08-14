@@ -434,6 +434,44 @@ function luaSysBridge.getenv(var_name)
     return os.getenv(var_name)
 end
 
+--- Set an environment variable for the current process (and any subsequently executed children).
+--- Uses LUAPOSIX posix.setenv.
+--- Compatible with Lua 5.1–5.4 and LuaJIT.
+---
+--- After calling this function the new value is immediately visible via getenv()
+--- and will be inherited by any program started with execvp / execute / iopopen etc.
+---
+--- @param name  string  Name of the environment variable (must be non-empty)
+--- @param value string  Value to set (may be empty string)
+--- @param overwrite boolean|nil  If false, do not overwrite an existing variable
+---                                 (default: true – always overwrite)
+--- @return boolean true on success
+--- @return string|nil error message on failure
+function luaSysBridge.setenv(name, value, overwrite)
+    if type(name) ~= "string" or name == "" then
+        return false, "setenv(): name must be a non-empty string"
+    end
+    if type(value) ~= "string" then
+        return false, "setenv(): value must be a string"
+    end
+
+    -- default: overwrite existing variable
+    if overwrite == nil then
+        overwrite = true
+    end
+
+    local posix = require("posix")
+
+    -- posix.setenv returns 0 on success, nil + errmsg on failure
+    local ret, err = posix.setenv(name, value, overwrite)
+
+    if ret ~= 0 then
+        return false, err or "setenv failed"
+    end
+
+    return true
+end
+
 --- Change file or dir owner and group. Uses LUAPOSIX:
 --- https://luaposix.github.io/luaposix/modules/posix.unistd.html#chown
 --- Compatible with Lua 5.1–5.4 and LuaJIT.
