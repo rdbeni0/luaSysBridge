@@ -158,33 +158,6 @@ function luaSysBridge.mkdir(path)
     return true
 end
 
---- Safe wrapper for xpcall().
---- Compatible with Lua 5.1–5.4 and LuaJIT.
---- Executes fn safely and converts errors into return values.
---- Errors are caught without adding a stack trace.
---- @param fn function Function to call safely.
---- @param ... any Arguments passed to the function.
---- @return boolean success True if fn executed without error.
---- @return any result The returned value (or nil on error).
---- @return string|nil errmsg Error message (nil on success).
-function luaSysBridge.xpcall(fn, ...)
-    local n = select("#", ...)
-    local args = { ... }
-
-    local function quiet(err)
-        return err
-    end
-
-    local ok, result_or_err = xpcall(function()
-        return fn(luaSysBridge.table_unpack(args, 1, n))
-    end, quiet)
-
-    if ok then
-        return true, result_or_err, nil
-    end
-
-    return false, nil, result_or_err
-end
 
 --- Remove a directory and its contents. Uses LUAPOSIX. Equivalent to "rm -rf".
 --- @param dir_path string Path to the directory to remove.
@@ -1112,6 +1085,34 @@ function luaSysBridge.get_hostname()
     -- end
     -- return (stdout:gsub("\n", ""))
     -- <<<<<<<<<<<<
+end
+
+--- Safe wrapper for xpcall().
+--- Compatible with Lua 5.1–5.4 and LuaJIT.
+--- Executes fn safely and converts errors into return values.
+--- Errors are caught without adding a stack trace.
+--- @param fn function Function to call safely.
+--- @param ... any Arguments passed to the function.
+--- @return boolean success True if fn executed without error.
+--- @return any result The returned value (or nil on error).
+--- @return string|nil errmsg Error message (nil on success).
+function luaSysBridge.xpcall(fn, ...)
+    local n = select("#", ...)
+    local args = { ... }
+
+    local function quiet(err)
+        return err
+    end
+
+    local ok, result_or_err = xpcall(function()
+        return fn(luaSysBridge.table_unpack(args, 1, n))
+    end, quiet)
+
+    if ok then
+        return true, result_or_err, nil
+    end
+
+    return false, nil, result_or_err
 end
 
 --- Execute a main function protected with pcall.
