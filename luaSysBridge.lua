@@ -1947,9 +1947,9 @@ end
 ---   color                  boolean Enable ANSI colors via the ansicolors
 ---                                  module (default: false / off).
 ---                                  When enabled:
----                                    - meta (--- / +++ / @@ headers) → blue
----                                    - content A (deletions, "-" lines) → red
----                                    - content B (insertions, "+" lines) → green
+---                                    - meta (--- / +++ / @@ headers) -> blue
+---                                    - content A (deletions, "-" lines) -> red
+---                                    - content B (insertions, "+" lines) -> green
 ---                                  Context lines (" " prefix) stay uncolored.
 ---                                  Requires: local ansicolors = require("ansicolors")
 ---
@@ -2643,8 +2643,8 @@ end
 --- @param opts table|nil Options (all optional):
 ---   prompt     string   Prompt text shown by fzf (default: "Select: ")
 ---   multi      boolean  Allow multiple selection (default: false)
----                       When true → returns table of selected strings
----                       When false → returns a single string
+---                       When true -> returns table of selected strings
+---                       When false -> returns a single string
 ---   height     string|number  Height of fzf window, e.g. "40%", 15, "50%"
 ---   reverse    boolean  Reverse the layout (list on top)
 ---   preview    string   Preview command (passed to --preview)
@@ -2663,6 +2663,14 @@ function luaSysBridge.fzf(options, opts)
     end
 
     ----------------------------------------------------------------
+    -- Helper: bezpieczne quotowanie do shella (single quotes)
+    ----------------------------------------------------------------
+    local function shell_quote(s)
+        -- ' -> '\''
+        return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
+    end
+
+    ----------------------------------------------------------------
     -- Build input list
     ----------------------------------------------------------------
     local lines = {}
@@ -2676,9 +2684,9 @@ function luaSysBridge.fzf(options, opts)
     ----------------------------------------------------------------
     local fzf_args = { "fzf" }
 
-    -- prompt (always present)
+    -- prompt (zawsze quotujemy – może zawierać spacje)
     local prompt = opts.prompt or "Select: "
-    table.insert(fzf_args, "--prompt=" .. prompt)
+    table.insert(fzf_args, "--prompt=" .. shell_quote(prompt))
 
     if opts.multi then
         table.insert(fzf_args, "--multi")
@@ -2693,11 +2701,11 @@ function luaSysBridge.fzf(options, opts)
     end
 
     if opts.preview and opts.preview ~= "" then
-        table.insert(fzf_args, "--preview=" .. opts.preview)
+        table.insert(fzf_args, "--preview=" .. shell_quote(opts.preview))
     end
 
     if opts.header and opts.header ~= "" then
-        table.insert(fzf_args, "--header=" .. opts.header)
+        table.insert(fzf_args, "--header=" .. shell_quote(opts.header))
     end
 
     if opts.no_sort then
@@ -2712,7 +2720,6 @@ function luaSysBridge.fzf(options, opts)
 
     ----------------------------------------------------------------
     -- Run fzf (feed list via stdin, capture selection)
-    -- We use a temporary file to avoid complex shell escaping.
     ----------------------------------------------------------------
     local tmp = os.tmpname()
     local f, err = io.open(tmp, "w")
@@ -2722,9 +2729,8 @@ function luaSysBridge.fzf(options, opts)
     f:write(input_data)
     f:close()
 
-    -- Note: fzf draws its UI on stderr. We therefore do NOT redirect stderr.
-    -- iopopen_stdout_err would break the TUI, so we use a plain popen.
-    local full_cmd = string.format("%s < %q", cmd, tmp)
+    -- fzf rysuje UI na stderr – nie przekierowujemy go
+    local full_cmd = string.format("%s < %s", cmd, shell_quote(tmp))
     local pipe = io.popen(full_cmd, "r")
     if not pipe then
         os.remove(tmp)
@@ -2739,7 +2745,6 @@ function luaSysBridge.fzf(options, opts)
     output = output:gsub("\n+$", "")
 
     if output == "" then
-        -- User cancelled (Esc / Ctrl-C) or no selection
         if opts.multi then
             return {}
         else
@@ -2747,9 +2752,6 @@ function luaSysBridge.fzf(options, opts)
         end
     end
 
-    ----------------------------------------------------------------
-    -- Return value according to mode
-    ----------------------------------------------------------------
     if opts.multi then
         local result = {}
         for line in output:gmatch("[^\n]+") do
@@ -2757,8 +2759,116 @@ function luaSysBridge.fzf(options, opts)
         end
         return result
     else
-        -- single selection – take first (and only) line
         return (output:match("^[^\n]+")) or nil
+    end
+end
+
+--- Interactive selection of a script matching a given prefix and then
+--- execute / execvp it.
+--- Compatible with Lua 5.1–5.4 and LuaJIT.
+---
+--- Typical use-case: scripts named "ab0_fzf", "ai_fzf", "ab1_fzf" that
+--- should list and launch sibling scripts with the same prefix.
+---
+--- @param prefix  string   Prefix used for matching (e.g. "ab0", "ai")
+--- @param dir     string   Directory that contains the scripts
+--- @param prompt  string   Prompt shown by fzf
+--- @param mode    string|nil  "execvp" (default) or "exec"
+---                            - "execvp" -> replaces current process (never returns on success)
+---                            - "exec"   -> runs via os.execute / funsy.execute and returns
+--- @param opts    table|nil  Extra options passed directly to luaSysBridge.fzf()
+---                           (height, reverse, multi, preview, header, ...)
+---
+--- @return boolean|nil, string|nil
+---   - mode "execvp": never returns on success; on failure returns nil + error
+---   - mode "exec"  : returns success (boolean), error message (or nil)
+function luaSysBridge.fzf_select_and_run(prefix, dir, prompt, mode, opts)
+    opts = opts or {}
+    mode = mode or "execvp"
+
+    if type(prefix) ~= "string" or prefix == "" then
+        return nil, "fzf_select_and_run(): prefix must be a non-empty string"
+    end
+    if type(dir) ~= "string" or dir == "" then
+        return nil, "fzf_select_and_run(): dir must be a non-empty string"
+    end
+    if type(prompt) ~= "string" then
+        prompt = "Select script > "
+    end
+    if mode ~= "execvp" and mode ~= "exec" then
+        return nil, 'fzf_select_and_run(): mode must be "execvp" or "exec"'
+    end
+
+    if not luaSysBridge.exists_directory(dir) then
+        return nil, "fzf_select_and_run(): directory does not exist: " .. dir
+    end
+
+    ----------------------------------------------------------------
+    -- Build candidate list (exclude the calling script itself)
+    ----------------------------------------------------------------
+    local current_basename = luaSysBridge.basename(arg and arg[0] or "")
+    local candidates = luaSysBridge.find(dir, prefix .. "*") or {}
+
+    local scripts = {}
+    for _, name in ipairs(candidates) do
+        if name ~= current_basename then
+            scripts[#scripts + 1] = name
+        end
+    end
+
+    if #scripts == 0 then
+        return nil, 'fzf_select_and_run(): no scripts matching "' .. prefix .. '*" found'
+    end
+
+    ----------------------------------------------------------------
+    -- Interactive selection
+    ----------------------------------------------------------------
+    local selected = luaSysBridge.fzf(scripts, {
+        prompt = prompt,
+        height = opts.height,
+        reverse = opts.reverse,
+        multi = opts.multi, -- normally false for this use-case
+        preview = opts.preview,
+        header = opts.header,
+        no_sort = opts.no_sort,
+        ansi = opts.ansi,
+        -- any future fzf options can be forwarded here
+    })
+
+    if not selected or selected == "" then
+        -- User cancelled
+        return nil, "cancelled"
+    end
+
+    -- In multi mode selected is a table – take the first entry for running
+    if type(selected) == "table" then
+        selected = selected[1]
+        if not selected then
+            return nil, "cancelled"
+        end
+    end
+
+    local full_path = dir .. "/" .. selected
+
+    if not luaSysBridge.exists_file(full_path) then
+        return nil, "fzf_select_and_run(): selected file does not exist: " .. full_path
+    end
+
+    ----------------------------------------------------------------
+    -- Run the selected script
+    ----------------------------------------------------------------
+    if mode == "execvp" then
+        -- Replaces current process – does not return on success
+        local _, errstr, errnum = luaSysBridge.execvp(full_path, {})
+        return nil, string.format("execvp failed: %s (errno %s)", tostring(errstr), tostring(errnum))
+    else
+        -- Ordinary execute – returns control to the caller
+        local success, code = luaSysBridge.execute(full_path)
+        if success then
+            return true
+        else
+            return false, "execute failed with code " .. tostring(code)
+        end
     end
 end
 
