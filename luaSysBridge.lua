@@ -1427,6 +1427,12 @@ function luaSysBridge.pwd_currentdir()
     return lfs.currentdir()
 end
 
+--- Compatibility wrapper for table.unpack / unpack.
+--- Works on Lua 5.1 + LuaJIT (global `unpack`) and Lua 5.2+ (`table.unpack`).
+--- @param ... any  table [, i [, j ]]
+--- @return ... Unpacked values
+luaSysBridge.table_unpack = table.unpack or unpack
+
 --- Pretty-print a given lua table recursively to stdout.
 --- Prints keys and values; when a value is a table, recurses with increased indentation.
 --- @param tbl table Table to print
