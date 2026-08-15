@@ -2651,6 +2651,11 @@ end
 ---   header     string   Header text (--header)
 ---   no_sort    boolean  Disable sorting (--no-sort)
 ---   ansi       boolean  Enable ANSI color codes (--ansi)
+---   bash       boolean  If true, run preview via a temp bash script so the
+---                       preview body can use bash/sh syntax even when
+---                       $SHELL is fish. Default: false (no change).
+---   shell      string   Explicit shell binary for the temp preview script
+---                       (e.g. "bash", "sh"). Overrides bash=true when set.
 ---
 --- @return string|table|nil
 ---   - single mode : selected string or nil (cancelled / error)
@@ -2663,10 +2668,9 @@ function luaSysBridge.fzf(options, opts)
     end
 
     ----------------------------------------------------------------
-    -- Helper: bezpieczne quotowanie do shella (single quotes)
+    -- Helper: safe single-quote for the shell
     ----------------------------------------------------------------
     local function shell_quote(s)
-        -- ' -> '\''
         return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
     end
 
@@ -2680,11 +2684,52 @@ function luaSysBridge.fzf(options, opts)
     local input_data = table.concat(lines, "\n") .. "\n"
 
     ----------------------------------------------------------------
+    -- Optional: materialise preview as a temp script under bash/sh
+    -- so nested quotes and fish-as-$SHELL are not a problem.
+    --
+    -- Inside the preview string, keep using `{}` as usual — it is
+    -- rewritten to `"$1"` (the argument fzf passes to the script).
+    ----------------------------------------------------------------
+    local preview_script_path = nil
+
+    local function build_preview_arg(preview_body)
+        local wrap_shell = nil
+        if type(opts.shell) == "string" and opts.shell ~= "" then
+            wrap_shell = opts.shell
+        elseif opts.bash == true then
+            wrap_shell = "bash"
+        end
+
+        if not wrap_shell then
+            -- Default: pass preview through unchanged (fzf uses $SHELL)
+            return "--preview=" .. shell_quote(preview_body)
+        end
+
+        -- Rewrite {} -> "$1" for the script argument
+        local script_body = preview_body:gsub("{}", "$1")
+
+        preview_script_path = os.tmpname()
+        local sf, serr = io.open(preview_script_path, "w")
+        if not sf then
+            return "--preview=" .. shell_quote(preview_body)
+        end
+        sf:write("#!/usr/bin/env " .. wrap_shell .. "\n")
+        sf:write(script_body)
+        if script_body:sub(-1) ~= "\n" then
+            sf:write("\n")
+        end
+        sf:close()
+
+        -- fzf replaces {} with the selected line and passes it as $1
+        local preview_cmd = string.format("%s %s {}", wrap_shell, shell_quote(preview_script_path))
+        return "--preview=" .. shell_quote(preview_cmd)
+    end
+
+    ----------------------------------------------------------------
     -- Build fzf command line from opts
     ----------------------------------------------------------------
     local fzf_args = { "fzf" }
 
-    -- prompt (zawsze quotujemy – może zawierać spacje)
     local prompt = opts.prompt or "Select: "
     table.insert(fzf_args, "--prompt=" .. shell_quote(prompt))
 
@@ -2701,7 +2746,7 @@ function luaSysBridge.fzf(options, opts)
     end
 
     if opts.preview and opts.preview ~= "" then
-        table.insert(fzf_args, "--preview=" .. shell_quote(opts.preview))
+        table.insert(fzf_args, build_preview_arg(opts.preview))
     end
 
     if opts.header and opts.header ~= "" then
@@ -2722,26 +2767,34 @@ function luaSysBridge.fzf(options, opts)
     -- Run fzf (feed list via stdin, capture selection)
     ----------------------------------------------------------------
     local tmp = os.tmpname()
-    local f, err = io.open(tmp, "w")
+    local f = io.open(tmp, "w")
     if not f then
+        if preview_script_path then
+            os.remove(preview_script_path)
+        end
         return nil
     end
     f:write(input_data)
     f:close()
 
-    -- fzf rysuje UI na stderr – nie przekierowujemy go
+    -- fzf draws UI on stderr — do not redirect it
     local full_cmd = string.format("%s < %s", cmd, shell_quote(tmp))
     local pipe = io.popen(full_cmd, "r")
     if not pipe then
         os.remove(tmp)
+        if preview_script_path then
+            os.remove(preview_script_path)
+        end
         return nil
     end
 
     local output = pipe:read("*a") or ""
     pipe:close()
     os.remove(tmp)
+    if preview_script_path then
+        os.remove(preview_script_path)
+    end
 
-    -- Clean trailing newlines
     output = output:gsub("\n+$", "")
 
     if output == "" then
