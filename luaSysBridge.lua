@@ -2636,4 +2636,130 @@ function luaSysBridge.diff_ask_and_copy(src, dst, opts)
     end
 end
 
+--- Interactive fuzzy finder using the external `fzf` binary.
+--- Compatible with Lua 5.1–5.4 and LuaJIT.
+---
+--- @param options table  Array of values to choose from (converted to strings)
+--- @param opts table|nil Options (all optional):
+---   prompt     string   Prompt text shown by fzf (default: "Select: ")
+---   multi      boolean  Allow multiple selection (default: false)
+---                       When true → returns table of selected strings
+---                       When false → returns a single string
+---   height     string|number  Height of fzf window, e.g. "40%", 15, "50%"
+---   reverse    boolean  Reverse the layout (list on top)
+---   preview    string   Preview command (passed to --preview)
+---   header     string   Header text (--header)
+---   no_sort    boolean  Disable sorting (--no-sort)
+---   ansi       boolean  Enable ANSI color codes (--ansi)
+---
+--- @return string|table|nil
+---   - single mode : selected string or nil (cancelled / error)
+---   - multi mode  : table of selected strings (may be empty) or nil on error
+function luaSysBridge.fzf(options, opts)
+    opts = opts or {}
+
+    if type(options) ~= "table" or #options == 0 then
+        return nil
+    end
+
+    ----------------------------------------------------------------
+    -- Build input list
+    ----------------------------------------------------------------
+    local lines = {}
+    for i = 1, #options do
+        lines[i] = tostring(options[i])
+    end
+    local input_data = table.concat(lines, "\n") .. "\n"
+
+    ----------------------------------------------------------------
+    -- Build fzf command line from opts
+    ----------------------------------------------------------------
+    local fzf_args = { "fzf" }
+
+    -- prompt (always present)
+    local prompt = opts.prompt or "Select: "
+    table.insert(fzf_args, "--prompt=" .. prompt)
+
+    if opts.multi then
+        table.insert(fzf_args, "--multi")
+    end
+
+    if opts.height then
+        table.insert(fzf_args, "--height=" .. tostring(opts.height))
+    end
+
+    if opts.reverse then
+        table.insert(fzf_args, "--reverse")
+    end
+
+    if opts.preview and opts.preview ~= "" then
+        table.insert(fzf_args, "--preview=" .. opts.preview)
+    end
+
+    if opts.header and opts.header ~= "" then
+        table.insert(fzf_args, "--header=" .. opts.header)
+    end
+
+    if opts.no_sort then
+        table.insert(fzf_args, "--no-sort")
+    end
+
+    if opts.ansi then
+        table.insert(fzf_args, "--ansi")
+    end
+
+    local cmd = table.concat(fzf_args, " ")
+
+    ----------------------------------------------------------------
+    -- Run fzf (feed list via stdin, capture selection)
+    -- We use a temporary file to avoid complex shell escaping.
+    ----------------------------------------------------------------
+    local tmp = os.tmpname()
+    local f, err = io.open(tmp, "w")
+    if not f then
+        return nil
+    end
+    f:write(input_data)
+    f:close()
+
+    -- Note: fzf draws its UI on stderr. We therefore do NOT redirect stderr.
+    -- iopopen_stdout_err would break the TUI, so we use a plain popen.
+    local full_cmd = string.format("%s < %q", cmd, tmp)
+    local pipe = io.popen(full_cmd, "r")
+    if not pipe then
+        os.remove(tmp)
+        return nil
+    end
+
+    local output = pipe:read("*a") or ""
+    pipe:close()
+    os.remove(tmp)
+
+    -- Clean trailing newlines
+    output = output:gsub("\n+$", "")
+
+    if output == "" then
+        -- User cancelled (Esc / Ctrl-C) or no selection
+        if opts.multi then
+            return {}
+        else
+            return nil
+        end
+    end
+
+    ----------------------------------------------------------------
+    -- Return value according to mode
+    ----------------------------------------------------------------
+    if opts.multi then
+        local result = {}
+        for line in output:gmatch("[^\n]+") do
+            result[#result + 1] = line
+        end
+        return result
+    else
+        -- single selection – take first (and only) line
+        return (output:match("^[^\n]+")) or nil
+    end
+end
+
 return luaSysBridge
