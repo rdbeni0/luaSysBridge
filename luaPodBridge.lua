@@ -325,12 +325,7 @@ function luaPodBridge.images_fetch_json(runtime)
     local success, code, output = luaSysBridge.iopopen_stdout_err(runtime .. " images --format json")
 
     if not success or code ~= 0 then
-        return nil, string.format(
-            "%s images failed (code %s): %s",
-            runtime,
-            tostring(code),
-            tostring(output):match("^[^\n]*") or ""
-        )
+        return nil, string.format("%s images failed (code %s): %s", runtime, tostring(code), tostring(output):match("^[^\n]*") or "")
     end
 
     if not output or output:match("^%s*$") then
