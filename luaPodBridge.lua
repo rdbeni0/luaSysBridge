@@ -9,7 +9,7 @@
 --- luaPodBridge – helper library for Podman (and partially Docker) workflows.
 ---
 --- This module provides higher-level utilities focused on container runtimes,
---- especially Podman.  While many operations are compatible with Docker,
+--- especially Podman. While many operations are compatible with Docker,
 --- the primary development target is Podman (rootless, systemd integration,
 --- etc.).
 ---
@@ -43,23 +43,28 @@ local luaPodBridge = {}
 --- Existing content is completely replaced.
 ---
 --- @param path string  Absolute or relative path to the .env file
---- @param data table   Array of "KEY=value" strings **or** map {key = value}
---- @param opts table|nil  Optional { chmod = "...", chown = "...", group = "..." }
+--- @param data table   Array of "KEY=value" strings or map {key = value}
+--- @param opts table|nil Optional { chmod = "...", chown = "...", group = "..." }
 --- @return boolean true on success
 --- @return string|nil error message on failure
 function luaPodBridge.env_write(path, data, opts)
     if type(path) ~= "string" or path == "" then
         return false, "env_write(): path must be a non-empty string"
     end
+
     if type(data) ~= "table" then
         return false, "env_write(): data must be a table (array or map)"
     end
 
     opts = opts or {}
 
+    if type(opts) ~= "table" then
+        return false, "env_write(): opts must be a table or nil"
+    end
+
     local lines = {}
 
-    -- Detect array vs map
+    -- Detect array vs map.
     local is_array = (#data > 0)
 
     if is_array then
@@ -69,14 +74,18 @@ function luaPodBridge.env_write(path, data, opts)
             end
         end
     else
-        -- map: preserve a stable order (sorted keys)
+        -- Map: preserve a stable order (sorted keys).
         local keys = {}
+
         for k in pairs(data) do
             keys[#keys + 1] = k
         end
+
         table.sort(keys)
+
         for _, k in ipairs(keys) do
             local v = data[k]
+
             if v ~= nil then
                 lines[#lines + 1] = tostring(k) .. "=" .. tostring(v)
             end
@@ -84,11 +93,13 @@ function luaPodBridge.env_write(path, data, opts)
     end
 
     local content = table.concat(lines, "\n")
+
     if content ~= "" then
         content = content .. "\n"
     end
 
     local f, err = io.open(path, "w")
+
     if not f then
         return false, "env_write(): cannot open " .. path .. " for writing: " .. tostring(err)
     end
@@ -100,18 +111,18 @@ function luaPodBridge.env_write(path, data, opts)
         return false, "env_write(): write failed: " .. tostring(write_err)
     end
 
-    -- optional post-write chmod / chown
-    local bridge = require("luaSysBridge")
-
+    -- Optional post-write chmod / chown.
     if opts.chmod then
-        local ok_chmod, err_chmod = bridge.chmod(path, opts.chmod)
+        local ok_chmod, err_chmod = luaSysBridge.chmod(path, opts.chmod)
+
         if not ok_chmod then
             return false, "env_write(): chmod failed: " .. tostring(err_chmod)
         end
     end
 
     if opts.chown or opts.group then
-        local ok_chown, err_chown = bridge.chown(path, opts.chown, opts.group)
+        local ok_chown, err_chown = luaSysBridge.chown(path, opts.chown, opts.group)
+
         if not ok_chown then
             return false, "env_write(): chown failed: " .. tostring(err_chown)
         end
@@ -135,54 +146,64 @@ end
 ---
 --- @param path    string  Path to the .env file (created if missing)
 --- @param updates table   Map of { KEY = "new_value", ... }
---- @param opts    table|nil  Optional { chmod = "...", chown = "...", group = "..." }
+--- @param opts    table|nil Optional { chmod = "...", chown = "...", group = "..." }
 --- @return boolean true on success
 --- @return string|nil error message on failure
 function luaPodBridge.env_update(path, updates, opts)
     if type(path) ~= "string" or path == "" then
         return false, "env_update(): path must be a non-empty string"
     end
+
     if type(updates) ~= "table" then
         return false, "env_update(): updates must be a table (key -> value map)"
     end
 
     opts = opts or {}
 
-    -- Read current content (empty table when file does not exist)
+    if type(opts) ~= "table" then
+        return false, "env_update(): opts must be a table or nil"
+    end
+
+    -- Read current content (empty table when file does not exist).
     local current_lines = {}
+
     local f = io.open(path, "r")
+
     if f then
         for line in f:lines() do
             current_lines[#current_lines + 1] = line
         end
+
         f:close()
     end
 
-    -- Track which keys we have already replaced
+    -- Track which keys we have already replaced.
     local replaced = {}
-
     local new_lines = {}
 
     for _, line in ipairs(current_lines) do
-        -- Match KEY=... (allow spaces around =, ignore comments)
+        -- Match KEY=... (allow spaces around =, ignore comments).
         local key = line:match("^%s*([%w_]+)%s*=")
+
         if key and updates[key] ~= nil then
-            -- replace the whole line
             new_lines[#new_lines + 1] = key .. "=" .. tostring(updates[key])
+
             replaced[key] = true
         else
-            -- keep original line (comment, blank, or unrelated key)
+            -- Keep original line (comment, blank, or unrelated key).
             new_lines[#new_lines + 1] = line
         end
     end
 
-    -- Append keys that were not present in the original file
+    -- Append keys that were not present in the original file.
     local missing_keys = {}
+
     for k in pairs(updates) do
         if not replaced[k] then
             missing_keys[#missing_keys + 1] = k
         end
     end
+
     table.sort(missing_keys)
 
     for _, k in ipairs(missing_keys) do
@@ -190,11 +211,13 @@ function luaPodBridge.env_update(path, updates, opts)
     end
 
     local content = table.concat(new_lines, "\n")
+
     if content ~= "" then
         content = content .. "\n"
     end
 
     local out, err = io.open(path, "w")
+
     if not out then
         return false, "env_update(): cannot open " .. path .. " for writing: " .. tostring(err)
     end
@@ -206,24 +229,363 @@ function luaPodBridge.env_update(path, updates, opts)
         return false, "env_update(): write failed: " .. tostring(write_err)
     end
 
-    -- optional post-write chmod / chown
-    local bridge = require("luaSysBridge")
-
+    -- Optional post-write chmod / chown.
     if opts.chmod then
-        local ok_chmod, err_chmod = bridge.chmod(path, opts.chmod)
+        local ok_chmod, err_chmod = luaSysBridge.chmod(path, opts.chmod)
+
         if not ok_chmod then
             return false, "env_update(): chmod failed: " .. tostring(err_chmod)
         end
     end
 
     if opts.chown or opts.group then
-        local ok_chown, err_chown = bridge.chown(path, opts.chown, opts.group)
+        local ok_chown, err_chown = luaSysBridge.chown(path, opts.chown, opts.group)
+
         if not ok_chown then
             return false, "env_update(): chown failed: " .. tostring(err_chown)
         end
     end
 
     return true
+end
+
+-------------------------------------------------------------------------------
+-- Container helpers (podman / docker ps --format json)
+-------------------------------------------------------------------------------
+
+--- Run `<runtime> ps --format json` and decode the result.
+---
+--- By default only currently running containers are returned, matching the
+--- normal behaviour of `podman ps`.
+---
+--- When `opts.all == true`, `podman ps --all --format json` is used and
+--- stopped containers are included.
+---
+--- Supported runtimes:
+---   podman  default
+---   docker
+---
+--- @param opts table|string|nil Options or runtime name.
+---   runtime string   "podman" (default) or "docker"
+---   all     boolean  Include stopped containers (default false)
+--- @return table|nil data Array of raw container records returned by runtime
+--- @return string|nil err
+function luaPodBridge.ps_fetch_json(opts)
+    opts = opts or {}
+
+    if type(opts) == "string" then
+        opts = { runtime = opts }
+    elseif type(opts) ~= "table" then
+        return nil, "ps_fetch_json(): options must be a table, string or nil"
+    end
+
+    local runtime = opts.runtime or "podman"
+
+    if runtime ~= "podman" and runtime ~= "docker" then
+        return nil, 'ps_fetch_json(): runtime must be "podman" or "docker"'
+    end
+
+    if opts.all ~= nil and type(opts.all) ~= "boolean" then
+        return nil, "ps_fetch_json(): opts.all must be a boolean"
+    end
+
+    local command = runtime .. " ps"
+
+    if opts.all == true then
+        command = command .. " --all"
+    end
+
+    command = command .. " --format json"
+
+    local success, code, output = luaSysBridge.iopopen_stdout_err(command)
+
+    if not success or code ~= 0 then
+        local message = tostring(output or "")
+        message = message:match("^[^\n]*") or ""
+
+        return nil, string.format("%s ps failed (code %s): %s", runtime, tostring(code), message)
+    end
+
+    if not output or output:match("^%s*$") then
+        return {}
+    end
+
+    local json = require("json")
+
+    local ok, data = pcall(json.decode, output)
+
+    if not ok then
+        return nil, "ps_fetch_json(): failed to parse JSON: " .. tostring(data)
+    end
+
+    if type(data) ~= "table" then
+        return nil, "ps_fetch_json(): decoded JSON is not an array"
+    end
+
+    return data
+end
+
+--- Return containers matching the requested filters.
+---
+--- By default only currently running containers are returned, matching
+--- `podman ps`.
+---
+--- The returned container records are the original records produced by
+--- `podman ps --format json`; their field names are therefore preserved
+--- exactly as returned by the runtime (`Id`, `Names`, `Image`, `State`,
+--- `Status`, `Ports`, etc.).
+---
+--- Returned object:
+---   {
+---       count = 2,
+---       running = 2,
+---       total = 2,
+---       containers = {
+---           { ... },
+---           ...
+---       }
+---   }
+---
+--- `count` and `running` contain the number of running containers among
+--- the containers selected by the filters.
+---
+--- With `all = true`, stopped containers are included. In that case
+--- `total` may be greater than `count`.
+---
+--- Optional filters:
+---   name    string  Lua pattern matched against every container name
+---   image   string  Lua pattern matched against Image
+---   id      string  Lua pattern matched against Id
+---   status  string  Exact match against State
+---
+--- @param opts table|string|nil
+--- @return table|nil result
+--- @return string|nil err
+function luaPodBridge.ps(opts)
+    opts = opts or {}
+
+    if type(opts) == "string" then
+        opts = { runtime = opts }
+    elseif type(opts) ~= "table" then
+        return nil, "ps(): options must be a table, string or nil"
+    end
+
+    if opts.name ~= nil and type(opts.name) ~= "string" then
+        return nil, "ps(): opts.name must be a string"
+    end
+
+    if opts.image ~= nil and type(opts.image) ~= "string" then
+        return nil, "ps(): opts.image must be a string"
+    end
+
+    if opts.id ~= nil and type(opts.id) ~= "string" then
+        return nil, "ps(): opts.id must be a string"
+    end
+
+    if opts.status ~= nil and type(opts.status) ~= "string" then
+        return nil, "ps(): opts.status must be a string"
+    end
+
+    -- Validate Lua patterns before processing the container list.
+    local function validate_pattern(name, pattern)
+        if pattern == nil then
+            return true
+        end
+
+        local ok = pcall(function()
+            return (""):match(pattern)
+        end)
+
+        if not ok then
+            return false, "ps(): invalid " .. name .. " pattern: " .. pattern
+        end
+
+        return true
+    end
+
+    local ok, pattern_err = validate_pattern("name", opts.name)
+
+    if not ok then
+        return nil, pattern_err
+    end
+
+    ok, pattern_err = validate_pattern("image", opts.image)
+
+    if not ok then
+        return nil, pattern_err
+    end
+
+    ok, pattern_err = validate_pattern("id", opts.id)
+
+    if not ok then
+        return nil, pattern_err
+    end
+
+    local data, err = luaPodBridge.ps_fetch_json(opts)
+
+    if not data then
+        return nil, "ps(): " .. tostring(err)
+    end
+
+    local containers = {}
+
+    local function container_name_matches(container, pattern)
+        if not pattern then
+            return true
+        end
+
+        if type(container.Names) ~= "table" then
+            return false
+        end
+
+        for _, name in ipairs(container.Names) do
+            if type(name) == "string" and name:match(pattern) then
+                return true
+            end
+        end
+
+        return false
+    end
+
+    local function container_matches(container)
+        if not container_name_matches(container, opts.name) then
+            return false
+        end
+
+        if opts.image then
+            local image = container.Image
+
+            if type(image) ~= "string" or not image:match(opts.image) then
+                return false
+            end
+        end
+
+        if opts.id then
+            local id = container.Id
+
+            if type(id) ~= "string" or not id:match(opts.id) then
+                return false
+            end
+        end
+
+        if opts.status and container.State ~= opts.status then
+            return false
+        end
+
+        return true
+    end
+
+    for _, container in ipairs(data) do
+        if type(container) == "table" and container_matches(container) then
+            containers[#containers + 1] = container
+        end
+    end
+
+    local running = 0
+
+    for _, container in ipairs(containers) do
+        if container.State == "running" then
+            running = running + 1
+        end
+    end
+
+    return {
+        count = running,
+        running = running,
+        total = #containers,
+        containers = containers,
+    }
+end
+
+--- Return the number of currently running containers.
+---
+--- This is equivalent to the `count` field returned by `ps()`.
+---
+--- With `all = true`, stopped containers are included in the query,
+--- but they are not included in the returned count.
+---
+--- @param opts table|string|nil
+--- @return integer|nil count Number of running containers
+--- @return string|nil err
+function luaPodBridge.ps_count(opts)
+    local result, err = luaPodBridge.ps(opts)
+
+    if not result then
+        return nil, err
+    end
+
+    return result.count
+end
+
+--- Return a single container by exact name or ID.
+---
+--- The lookup is performed against the complete container list and does
+--- not use `ps()` filters.
+---
+--- An exact name match takes precedence over an ID match.
+---
+--- Container IDs may be abbreviated. If an abbreviated ID matches more
+--- than one container, the function returns an error instead of choosing
+--- an arbitrary container.
+---
+--- @param name_or_id string Container name or full/abbreviated ID
+--- @param opts table|string|nil Optional options passed to ps_fetch_json().
+---   The `all` and `runtime` options are supported.
+--- @return table|nil container Container record
+--- @return string|nil err
+function luaPodBridge.ps_get(name_or_id, opts)
+    if type(name_or_id) ~= "string" or name_or_id == "" then
+        return nil, "ps_get(): name_or_id must be a non-empty string"
+    end
+
+    opts = opts or {}
+
+    if type(opts) == "string" then
+        opts = { runtime = opts }
+    elseif type(opts) ~= "table" then
+        return nil, "ps_get(): options must be a table, string or nil"
+    end
+
+    local data, err = luaPodBridge.ps_fetch_json(opts)
+
+    if not data then
+        return nil, "ps_get(): " .. tostring(err)
+    end
+
+    local id_matches = {}
+
+    for _, container in ipairs(data) do
+        if type(container) == "table" then
+            -- Exact name match always wins.
+            if type(container.Names) == "table" then
+                for _, name in ipairs(container.Names) do
+                    if name == name_or_id then
+                        return container
+                    end
+                end
+            end
+
+            -- Exact ID match.
+            if container.Id == name_or_id then
+                return container
+            end
+
+            -- Abbreviated ID match.
+            if type(container.Id) == "string" and #name_or_id < #container.Id and container.Id:sub(1, #name_or_id) == name_or_id then
+                id_matches[#id_matches + 1] = container
+            end
+        end
+    end
+
+    if #id_matches == 1 then
+        return id_matches[1]
+    end
+
+    if #id_matches > 1 then
+        return nil, "ps_get(): abbreviated ID is ambiguous: " .. name_or_id
+    end
+
+    return nil, "container not found: " .. name_or_id
 end
 
 -------------------------------------------------------------------------------
@@ -242,22 +604,26 @@ local DEFAULT_REGISTRIES = {
 
 --- Return true when `name` starts with any of the given registry prefixes.
 --- @param name string
---- @param registries table|nil  Array of prefixes; defaults to DEFAULT_REGISTRIES
+--- @param registries table|nil Array of prefixes; defaults to DEFAULT_REGISTRIES
 --- @return boolean
 local function matches_registry(name, registries)
     registries = registries or DEFAULT_REGISTRIES
+
     if type(name) ~= "string" or name == "" then
         return false
     end
+
     for _, prefix in ipairs(registries) do
         if type(prefix) == "string" and prefix ~= "" and name:sub(1, #prefix) == prefix then
             return true
         end
     end
+
     return false
 end
 
---- Collect name candidates from one image record (Names -> History -> RepoTags).
+--- Collect name candidates from one image record
+--- (Names -> History -> RepoTags).
 local function image_collect_names(img, include_history, include_repotags)
     local list = {}
     local seen = {}
@@ -274,11 +640,13 @@ local function image_collect_names(img, include_history, include_repotags)
             add(n)
         end
     end
+
     if include_history ~= false and type(img.History) == "table" then
         for _, n in ipairs(img.History) do
             add(n)
         end
     end
+
     if include_repotags and type(img.RepoTags) == "table" then
         for _, n in ipairs(img.RepoTags) do
             add(n)
@@ -293,15 +661,18 @@ local function image_primary_name(img)
     if type(img.Names) == "table" and img.Names[1] then
         return img.Names[1]
     end
+
     if type(img.History) == "table" and img.History[1] then
         return img.History[1]
     end
+
     return nil
 end
 
 --- Human-readable size (e.g. "528.34 MB").
 local function format_size(bytes)
     bytes = tonumber(bytes) or 0
+
     if bytes >= 1073741824 then
         return string.format("%.2f GB", bytes / 1073741824)
     elseif bytes >= 1048576 then
@@ -309,32 +680,51 @@ local function format_size(bytes)
     elseif bytes >= 1024 then
         return string.format("%.2f KB", bytes / 1024)
     end
+
     return string.format("%d B", bytes)
 end
 
---- Run `<runtime> images --format json` and decode with json.lua.
---- @param runtime string  "podman" or "docker"
---- @return table|nil data  Array of image records
+--- Run `<runtime> images --format json` and decode the result.
+---
+--- Supported runtimes:
+---   podman
+---   docker
+---
+--- @param runtime string "podman" or "docker"
+--- @return table|nil data Array of image records
 --- @return string|nil err
 function luaPodBridge.images_fetch_json(runtime)
     if type(runtime) ~= "string" or runtime == "" then
         return nil, "images_fetch_json(): runtime must be a non-empty string"
     end
 
-    local json = require("json")
+    if runtime ~= "podman" and runtime ~= "docker" then
+        return nil, 'images_fetch_json(): runtime must be "podman" or "docker"'
+    end
+
     local success, code, output = luaSysBridge.iopopen_stdout_err(runtime .. " images --format json")
 
     if not success or code ~= 0 then
-        return nil, string.format("%s images failed (code %s): %s", runtime, tostring(code), tostring(output):match("^[^\n]*") or "")
+        local message = tostring(output or "")
+        message = message:match("^[^\n]*") or ""
+
+        return nil, string.format("%s images failed (code %s): %s", runtime, tostring(code), message)
     end
 
     if not output or output:match("^%s*$") then
         return {}
     end
 
+    local json = require("json")
+
     local ok, data = pcall(json.decode, output)
-    if not ok or type(data) ~= "table" then
-        return nil, "failed to parse JSON: " .. tostring(data)
+
+    if not ok then
+        return nil, "images_fetch_json(): failed to parse JSON: " .. tostring(data)
+    end
+
+    if type(data) ~= "table" then
+        return nil, "images_fetch_json(): decoded JSON is not an array"
     end
 
     return data
@@ -406,28 +796,105 @@ end
 --- @return string|nil err
 function luaPodBridge.images_get_names(opts)
     opts = opts or {}
+
     if type(opts) == "string" then
         opts = { runtime = opts }
+    elseif type(opts) ~= "table" then
+        return nil, "images_get_names(): options must be a table, string or nil"
     end
 
     local runtime = opts.runtime or "podman"
+
     if type(runtime) ~= "string" or runtime == "" then
         return nil, "images_get_names(): runtime must be a non-empty string"
     end
 
+    if runtime ~= "podman" and runtime ~= "docker" then
+        return nil, 'images_get_names(): runtime must be "podman" or "docker"'
+    end
+
     local mode = opts.mode or "names"
+
     if mode ~= "names" and mode ~= "digests" then
         return nil, 'images_get_names(): mode must be "names" or "digests"'
     end
 
+    if opts.filter ~= nil and type(opts.filter) ~= "string" then
+        return nil, "images_get_names(): opts.filter must be a string"
+    end
+
+    if opts.registry_pattern ~= nil and type(opts.registry_pattern) ~= "string" then
+        return nil, "images_get_names(): opts.registry_pattern must be a string"
+    end
+
+    if opts.registries ~= nil and type(opts.registries) ~= "table" then
+        return nil, "images_get_names(): opts.registries must be a table"
+    end
+
+    if opts.registry_only ~= nil and type(opts.registry_only) ~= "boolean" then
+        return nil, "images_get_names(): opts.registry_only must be a boolean"
+    end
+
+    if opts.include_history ~= nil and type(opts.include_history) ~= "boolean" then
+        return nil, "images_get_names(): opts.include_history must be a boolean"
+    end
+
+    if opts.include_repotags ~= nil and type(opts.include_repotags) ~= "boolean" then
+        return nil, "images_get_names(): opts.include_repotags must be a boolean"
+    end
+
+    if opts.exclude_none ~= nil and type(opts.exclude_none) ~= "boolean" then
+        return nil, "images_get_names(): opts.exclude_none must be a boolean"
+    end
+
+    if opts.with_meta ~= nil and type(opts.with_meta) ~= "boolean" then
+        return nil, "images_get_names(): opts.with_meta must be a boolean"
+    end
+
+    if opts.sort ~= nil and type(opts.sort) ~= "boolean" then
+        return nil, "images_get_names(): opts.sort must be a boolean"
+    end
+
+    -- Validate Lua patterns before processing images.
+    local function validate_pattern(name, pattern)
+        if pattern == nil then
+            return true
+        end
+
+        local ok = pcall(function()
+            return (""):match(pattern)
+        end)
+
+        if not ok then
+            return false, "images_get_names(): invalid " .. name .. " pattern: " .. pattern
+        end
+
+        return true
+    end
+
+    local ok, pattern_err = validate_pattern("filter", opts.filter)
+
+    if not ok then
+        return nil, pattern_err
+    end
+
+    ok, pattern_err = validate_pattern("registry_pattern", opts.registry_pattern)
+
+    if not ok then
+        return nil, pattern_err
+    end
+
     local data, err = luaPodBridge.images_fetch_json(runtime)
+
     if not data then
         return nil, "images_get_names(): " .. tostring(err)
     end
 
     local filter = opts.filter
     local reg_pat = opts.registry_pattern
+
     local registries = opts.registries
+
     if not registries and opts.registry_only then
         registries = DEFAULT_REGISTRIES
     end
@@ -444,15 +911,19 @@ function luaPodBridge.images_get_names(opts)
         if exclude_none and v:find("<none>", 1, true) then
             return false
         end
+
         if filter and not v:match(filter) then
             return false
         end
+
         if registries and not matches_registry(v, registries) then
             return false
         end
+
         if reg_pat and not v:match(reg_pat) then
             return false
         end
+
         return true
     end
 
@@ -460,9 +931,11 @@ function luaPodBridge.images_get_names(opts)
         for _, img in ipairs(data) do
             if type(img) == "table" then
                 local candidates = image_collect_names(img, include_history, include_repotags)
+
                 for _, n in ipairs(candidates) do
                     if value_ok(n) and not seen[n] then
                         seen[n] = true
+
                         if with_meta then
                             results[#results + 1] = {
                                 name = n,
@@ -488,9 +961,11 @@ function luaPodBridge.images_get_names(opts)
         for _, img in ipairs(data) do
             if type(img) == "table" and type(img.RepoDigests) == "table" then
                 local primary = image_primary_name(img)
+
                 for _, d in ipairs(img.RepoDigests) do
                     if type(d) == "string" and d ~= "" and not seen[d] and value_ok(d) then
                         seen[d] = true
+
                         if with_meta then
                             results[#results + 1] = {
                                 digest_ref = d,
@@ -514,6 +989,7 @@ function luaPodBridge.images_get_names(opts)
     if opts.sort then
         if with_meta then
             local key = (mode == "digests") and "digest_ref" or "name"
+
             table.sort(results, function(a, b)
                 return tostring(a[key]) < tostring(b[key])
             end)
