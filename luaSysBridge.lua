@@ -158,7 +158,6 @@ function luaSysBridge.mkdir(path)
     return true
 end
 
-
 --- Remove a directory and its contents. Uses LUAPOSIX. Equivalent to "rm -rf".
 --- @param dir_path string Path to the directory to remove.
 --- @return boolean|nil true when directory was removed successfully.
