@@ -58,11 +58,11 @@ end
 --- Two calling styles are supported:
 ---
 --- 1. Friendly (recommended):
----      funsy.execvp("podman", { "run", "--rm", "-it", "image" })
+---      luaSysBridge.execvp("podman", { "run", "--rm", "-it", "image" })
 ---
 --- 2. Classic / explicit argv[0] (still works):
----      funsy.execvp("podman", { [0] = "podman", "run", "--rm", "-it", "image" })
----      funsy.execvp("podman", { "podman", "run", "--rm", "-it", "image" })
+---      luaSysBridge.execvp("podman", { [0] = "podman", "run", "--rm", "-it", "image" })
+---      luaSysBridge.execvp("podman", { "podman", "run", "--rm", "-it", "image" })
 ---
 --- @param file string Program name or path. If it contains no '/', PATH is searched.
 --- @param args table Argument vector. May start from the first real argument or contain key 0.
@@ -2828,7 +2828,7 @@ end
 --- @param prompt  string   Prompt shown by fzf
 --- @param mode    string|nil  "execvp" (default) or "exec"
 ---                            - "execvp" -> replaces current process (never returns on success)
----                            - "exec"   -> runs via os.execute / funsy.execute and returns
+---                            - "exec"   -> runs via os.execute / luaSysBridge.execute and returns
 --- @param opts    table|nil  Extra options passed directly to luaSysBridge.fzf()
 ---                           (height, reverse, multi, preview, header, ...)
 ---
