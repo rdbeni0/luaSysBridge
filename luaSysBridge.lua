@@ -16,6 +16,7 @@
 --- The module also uses below dependencies:
 --- LUAPOSIX : https://luaposix.github.io/luaposix/index.html
 --- LuaFileSystem : https://lunarmodules.github.io/luafilesystem/manual.html
+--- fzy-lua : https://github.com/swarn/fzy-lua
 
 local lfs = require("lfs")
 
@@ -2662,6 +2663,777 @@ function luaSysBridge.diff_ask_and_copy(src, dst, opts)
         print("Skipping copy.")
         return false
     end
+end
+
+--- Interactive fuzzy finder implemented directly with fzy-lua.
+---
+--- Unlike the fzf() implementation, this function does not
+--- execute the external `fzf` program and does not create temporary files.
+---
+--- Uses:
+---   - fzy-lua for fuzzy matching and ranking
+---   - LUAPOSIX for character-by-character terminal input
+---   - ANSI escape sequences for terminal rendering
+---
+--- Compatible with Lua 5.1–5.4 and LuaJIT.
+---
+--- Controls:
+---   ENTER       select current item
+---   TAB         toggle current item in multi mode
+---   UP/DOWN     move selection
+---   CTRL-P/N    move selection
+---   BACKSPACE   remove query character
+---   ESC         cancel
+---   CTRL-C      cancel
+---   CTRL-U      clear query
+---
+--- @param options table Array of values to choose from (converted to strings)
+--- @param opts table|nil Options:
+---   prompt     string   Prompt text (default: "Select: ")
+---   multi      boolean  Allow multiple selection (default: false)
+---   height     string|number Maximum number of visible result lines.
+---                       Examples: 10, "10", "50%".
+---   reverse    boolean  Put prompt/results in reverse order.
+---   header     string   Header displayed above the results.
+---   no_sort   boolean   Preserve original order instead of fzy ranking.
+---   ansi       boolean  Kept for API compatibility; ANSI rendering is
+---                       always used internally by this implementation.
+---
+--- @return string|table|nil
+---   single mode:
+---       selected string
+---       nil when cancelled
+---
+---   multi mode:
+---       table of selected strings
+---       {} when cancelled without selection
+---
+function luaSysBridge.fzy(options, opts)
+    opts = opts or {}
+
+    if type(options) ~= "table" or #options == 0 then
+        return nil
+    end
+
+    ----------------------------------------------------------------
+    -- Dependencies
+    ----------------------------------------------------------------
+
+    local fzy = require("fzy")
+    local termio = require("posix.termio")
+    local unistd = require("posix.unistd")
+
+    ----------------------------------------------------------------
+    -- Normalize options
+    ----------------------------------------------------------------
+
+    local items = {}
+
+    for i = 1, #options do
+        items[i] = tostring(options[i])
+    end
+
+    ----------------------------------------------------------------
+    -- Terminal
+    ----------------------------------------------------------------
+
+    local stdin_fd = 0
+    local stdout_fd = 1
+
+    local saved_termios = termio.tcgetattr(stdin_fd)
+
+    if not saved_termios then
+        return nil
+    end
+
+    ----------------------------------------------------------------
+    -- Terminal size
+    ----------------------------------------------------------------
+
+    local terminal_rows = 24
+
+    do
+        local winsize = termio.tcgetwinsize(stdout_fd)
+
+        if winsize and winsize.row then
+            terminal_rows = winsize.row
+        end
+    end
+
+    ----------------------------------------------------------------
+    -- Calculate result height
+    ----------------------------------------------------------------
+
+    local function calculate_height(value)
+        if value == nil then
+            -- Leave room for:
+            --   prompt
+            --   header
+            --   status
+            return math.max(5, terminal_rows - 4)
+        end
+
+        if type(value) == "number" then
+            return math.max(1, math.floor(value))
+        end
+
+        if type(value) == "string" then
+            local percent = value:match("^(%d+)%%$")
+
+            if percent then
+                local n = tonumber(percent)
+
+                if n then
+                    return math.max(1, math.floor(terminal_rows * n / 100))
+                end
+            end
+
+            local number = tonumber(value)
+
+            if number then
+                return math.max(1, math.floor(number))
+            end
+        end
+
+        return math.max(5, terminal_rows - 4)
+    end
+
+    local max_results = calculate_height(opts.height)
+
+    ----------------------------------------------------------------
+    -- Terminal helpers
+    ----------------------------------------------------------------
+
+    local function write(value)
+        unistd.write(stdout_fd, tostring(value))
+    end
+
+    local function clear_screen()
+        -- Move cursor to beginning and clear the complete screen.
+        write("\27[2J")
+        write("\27[H")
+    end
+
+    local function clear_line()
+        write("\27[2K\r")
+    end
+
+    local function cursor_up(count)
+        if count > 0 then
+            write(string.format("\27[%dA", count))
+        end
+    end
+
+    local function cursor_down(count)
+        if count > 0 then
+            write(string.format("\27[%dB", count))
+        end
+    end
+
+    ----------------------------------------------------------------
+    -- Convert height to actual number of results.
+    ----------------------------------------------------------------
+
+    if max_results < 1 then
+        max_results = 1
+    end
+
+    ----------------------------------------------------------------
+    -- UTF-8 helpers
+    --
+    -- fzy itself works on Lua strings. For terminal editing we need
+    -- to remove one UTF-8 character rather than one byte.
+    ----------------------------------------------------------------
+
+    local function utf8_prev_char_start(s, pos)
+        if pos <= 1 then
+            return 1
+        end
+
+        pos = pos - 1
+
+        while pos > 1 do
+            local byte = s:byte(pos)
+
+            if not byte then
+                break
+            end
+
+            if byte < 128 or byte >= 192 then
+                break
+            end
+
+            pos = pos - 1
+        end
+
+        return pos
+    end
+
+    local function utf8_remove_last(s)
+        if s == "" then
+            return ""
+        end
+
+        local pos = utf8_prev_char_start(s, #s + 1)
+
+        return s:sub(1, pos - 1)
+    end
+
+    ----------------------------------------------------------------
+    -- Search
+    ----------------------------------------------------------------
+
+    local function search(query)
+        if query == "" then
+            local result = {}
+
+            for i = 1, #items do
+                result[#result + 1] = {
+                    index = i,
+                    value = items[i],
+                    score = 0,
+                }
+            end
+
+            return result
+        end
+
+        local matches = fzy.filter(query, items)
+        local result = {}
+
+        for _, match in ipairs(matches) do
+            -- fzy.filter() returns:
+            --
+            --   { original_index, positions, score }
+            --
+            local index = match[1]
+            local positions = match[2]
+            local score = match[3]
+
+            result[#result + 1] = {
+                index = index,
+                value = items[index],
+                positions = positions,
+                score = score,
+            }
+        end
+
+        if not opts.no_sort then
+            table.sort(result, function(a, b)
+                return a.score > b.score
+            end)
+        end
+
+        return result
+    end
+
+    ----------------------------------------------------------------
+    -- Selection state
+    ----------------------------------------------------------------
+
+    local query = ""
+
+    local result_index = 1
+
+    local selected = {}
+
+    ----------------------------------------------------------------
+    -- Determine whether a result is selected.
+    ----------------------------------------------------------------
+
+    local function is_selected(index)
+        return selected[index] == true
+    end
+
+    ----------------------------------------------------------------
+    -- Toggle selection.
+    ----------------------------------------------------------------
+
+    local function toggle_selection(result)
+        if not result then
+            return
+        end
+
+        local index = result.index
+
+        if selected[index] then
+            selected[index] = nil
+        else
+            selected[index] = true
+        end
+    end
+
+    ----------------------------------------------------------------
+    -- Build ANSI-highlighted string.
+    --
+    -- fzy gives us the exact positions of matched characters.
+    ----------------------------------------------------------------
+
+    local function highlight(value, positions)
+        if not positions or #positions == 0 then
+            return value
+        end
+
+        local marked = {}
+
+        for _, position in ipairs(positions) do
+            marked[position] = true
+        end
+
+        local output = {}
+
+        for i = 1, #value do
+            local char = value:sub(i, i)
+
+            if marked[i] then
+                output[#output + 1] = "\27[1;33m"
+                output[#output + 1] = char
+                output[#output + 1] = "\27[0m"
+            else
+                output[#output + 1] = char
+            end
+        end
+
+        return table.concat(output)
+    end
+
+    ----------------------------------------------------------------
+    -- Render
+    ----------------------------------------------------------------
+
+    local function render(results)
+        clear_screen()
+
+        local header_lines = 0
+
+        if opts.header and opts.header ~= "" then
+            write(opts.header)
+            write("\n")
+            header_lines = 1
+        end
+
+        local prompt = opts.prompt or "Select: "
+
+        write(prompt)
+        write(query)
+        write("\n")
+
+        local count = #results
+
+        if count == 0 then
+            write("  No matches\n")
+        else
+            local first = 1
+
+            if result_index > max_results then
+                first = result_index - max_results + 1
+            end
+
+            if first < 1 then
+                first = 1
+            end
+
+            local last = math.min(count, first + max_results - 1)
+
+            if opts.reverse then
+                -- In reverse mode we still render from top to bottom.
+                -- The cursor/navigation semantics remain identical.
+            end
+
+            for i = first, last do
+                local result = results[i]
+
+                local marker
+
+                if i == result_index then
+                    marker = "> "
+                else
+                    marker = "  "
+                end
+
+                local selection_marker = ""
+
+                if opts.multi then
+                    if is_selected(result.index) then
+                        selection_marker = "[x] "
+                    else
+                        selection_marker = "[ ] "
+                    end
+                end
+
+                local value = highlight(result.value, result.positions)
+
+                write(marker)
+                write(selection_marker)
+                write(value)
+                write("\n")
+            end
+        end
+
+        local selected_count = 0
+
+        if opts.multi then
+            for _ in pairs(selected) do
+                selected_count = selected_count + 1
+            end
+        end
+
+        write("\n")
+
+        if opts.multi then
+            write(string.format("%d/%d matches, %d selected", count, #items, selected_count))
+        else
+            write(string.format("%d/%d matches", count, #items))
+        end
+
+        write("\n")
+
+        write("ENTER select  ↑/↓ move  " .. "CTRL-U clear  ESC cancel")
+
+        if opts.multi then
+            write("  TAB toggle")
+        end
+
+        write("\n")
+    end
+
+    ----------------------------------------------------------------
+    -- Raw terminal mode
+    --
+    -- We deliberately modify only the fields necessary for
+    -- character-at-a-time input.
+    ----------------------------------------------------------------
+
+    local raw_termios = {}
+
+    for k, v in pairs(saved_termios) do
+        raw_termios[k] = v
+    end
+
+    raw_termios.lflag = raw_termios.lflag - (termio.ICANON or 0) - (termio.ECHO or 0)
+
+    raw_termios.cc = {}
+
+    for k, v in pairs(saved_termios.cc or {}) do
+        raw_termios.cc[k] = v
+    end
+
+    raw_termios.cc[termio.VMIN] = 1
+    raw_termios.cc[termio.VTIME] = 0
+
+    local raw_ok = termio.tcsetattr(stdin_fd, termio.TCSANOW, raw_termios)
+
+    if raw_ok ~= 0 then
+        return nil
+    end
+
+    ----------------------------------------------------------------
+    -- Always restore terminal state.
+    ----------------------------------------------------------------
+
+    local function restore_terminal()
+        termio.tcsetattr(stdin_fd, termio.TCSANOW, saved_termios)
+
+        write("\27[0m")
+        write("\n")
+    end
+
+    ----------------------------------------------------------------
+    -- Read one byte.
+    ----------------------------------------------------------------
+
+    local function read_byte()
+        local data = unistd.read(stdin_fd, 1)
+
+        if not data or data == "" then
+            return nil
+        end
+
+        return data
+    end
+
+    ----------------------------------------------------------------
+    -- Read one terminal key.
+    ----------------------------------------------------------------
+
+    local function read_key()
+        local first = read_byte()
+
+        if not first then
+            return nil
+        end
+
+        local byte = first:byte()
+
+        ------------------------------------------------------------
+        -- ENTER
+        ------------------------------------------------------------
+
+        if byte == 10 or byte == 13 then
+            return "enter"
+        end
+
+        ------------------------------------------------------------
+        -- CTRL-C
+        ------------------------------------------------------------
+
+        if byte == 3 then
+            return "cancel"
+        end
+
+        ------------------------------------------------------------
+        -- CTRL-U
+        ------------------------------------------------------------
+
+        if byte == 21 then
+            return "clear"
+        end
+
+        ------------------------------------------------------------
+        -- TAB
+        ------------------------------------------------------------
+
+        if byte == 9 then
+            return "tab"
+        end
+
+        ------------------------------------------------------------
+        -- BACKSPACE
+        ------------------------------------------------------------
+
+        if byte == 8 or byte == 127 then
+            return "backspace"
+        end
+
+        ------------------------------------------------------------
+        -- ESC / arrows
+        ------------------------------------------------------------
+
+        if byte == 27 then
+            local second = read_byte()
+
+            if not second then
+                return "cancel"
+            end
+
+            if second == "[" then
+                local third = read_byte()
+
+                if third == "A" then
+                    return "up"
+                elseif third == "B" then
+                    return "down"
+                elseif third == "C" then
+                    return "right"
+                elseif third == "D" then
+                    return "left"
+                elseif third == "H" then
+                    return "home"
+                elseif third == "F" then
+                    return "end"
+                end
+
+                return "escape"
+            end
+
+            return "escape"
+        end
+
+        ------------------------------------------------------------
+        -- CTRL-P / CTRL-N
+        ------------------------------------------------------------
+
+        if byte == 16 then
+            return "up"
+        end
+
+        if byte == 14 then
+            return "down"
+        end
+
+        ------------------------------------------------------------
+        -- Normal character.
+        ------------------------------------------------------------
+
+        if byte >= 32 then
+            return first
+        end
+
+        return nil
+    end
+
+    ----------------------------------------------------------------
+    -- Main interactive loop
+    ----------------------------------------------------------------
+
+    local ok, return_value
+
+    ok, return_value = pcall(function()
+        while true do
+            local results = search(query)
+
+            --------------------------------------------------------
+            -- Keep cursor inside result range.
+            --------------------------------------------------------
+
+            if #results == 0 then
+                result_index = 1
+            elseif result_index > #results then
+                result_index = #results
+            elseif result_index < 1 then
+                result_index = 1
+            end
+
+            --------------------------------------------------------
+            -- Draw UI.
+            --------------------------------------------------------
+
+            render(results)
+
+            --------------------------------------------------------
+            -- Read one key.
+            --------------------------------------------------------
+
+            local key = read_key()
+
+            if not key then
+                return nil
+            end
+
+            --------------------------------------------------------
+            -- ENTER
+            --------------------------------------------------------
+
+            if key == "enter" then
+                if #results == 0 then
+                    if opts.multi then
+                        return {}
+                    end
+
+                    return nil
+                end
+
+                if opts.multi then
+                    local current = results[result_index]
+
+                    if current then
+                        if not is_selected(current.index) then
+                            selected[current.index] = true
+                        end
+                    end
+
+                    local result = {}
+
+                    for i = 1, #items do
+                        if selected[i] then
+                            result[#result + 1] = items[i]
+                        end
+                    end
+
+                    return result
+                end
+
+                return results[result_index].value
+            end
+
+            --------------------------------------------------------
+            -- ESC / CTRL-C
+            --------------------------------------------------------
+
+            if key == "cancel" or key == "escape" then
+                if opts.multi then
+                    return {}
+                end
+
+                return nil
+            end
+
+            --------------------------------------------------------
+            -- Clear query
+            --------------------------------------------------------
+
+            if key == "clear" then
+                query = ""
+                result_index = 1
+            end
+
+            --------------------------------------------------------
+            -- Backspace
+            --------------------------------------------------------
+
+            if key == "backspace" then
+                query = utf8_remove_last(query)
+                result_index = 1
+            end
+
+            --------------------------------------------------------
+            -- Navigation
+            --------------------------------------------------------
+
+            if key == "up" then
+                if #results > 0 then
+                    result_index = result_index - 1
+
+                    if result_index < 1 then
+                        result_index = #results
+                    end
+                end
+            end
+
+            if key == "down" then
+                if #results > 0 then
+                    result_index = result_index + 1
+
+                    if result_index > #results then
+                        result_index = 1
+                    end
+                end
+            end
+
+            --------------------------------------------------------
+            -- TAB
+            --------------------------------------------------------
+
+            if key == "tab" and opts.multi then
+                if #results > 0 then
+                    toggle_selection(results[result_index])
+
+                    result_index = result_index + 1
+
+                    if result_index > #results then
+                        result_index = 1
+                    end
+                end
+            end
+
+            --------------------------------------------------------
+            -- Normal character.
+            --
+            -- fzy performs matching on the complete query.
+            --------------------------------------------------------
+
+            if #key == 1 then
+                local byte = key:byte()
+
+                if byte >= 32 then
+                    query = query .. key
+                    result_index = 1
+                end
+            end
+        end
+    end)
+
+    ----------------------------------------------------------------
+    -- Restore terminal even when an error occurs.
+    ----------------------------------------------------------------
+
+    restore_terminal()
+
+    if not ok then
+        error(return_value)
+    end
+
+    return return_value
 end
 
 --- Interactive fuzzy finder using the external `fzf` binary.
