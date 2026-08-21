@@ -533,6 +533,76 @@ function luaSysBridge.chown(path, owner, group)
     return true
 end
 
+--- Send a signal to a process (POSIX kill).
+--- @param pid number Process ID (must be a positive integer)
+--- @param signal string|number|nil Signal name (e.g. "TERM", "KILL", "0") or number.
+---               Defaults to SIGTERM (15) if omitted.
+--- @return boolean success true on success, false otherwise
+--- @return string|nil err Error message on failure
+function luaSysBridge.kill(pid, signal)
+    local posix = require("posix")
+    local sig = require("posix.signal")
+
+    -- Map signal names to constants from posix.signal
+    local signal_map = {
+        ["0"] = 0,
+        ["HUP"] = sig.SIGHUP,
+        ["INT"] = sig.SIGINT,
+        ["QUIT"] = sig.SIGQUIT,
+        ["ABRT"] = sig.SIGABRT,
+        ["KILL"] = sig.SIGKILL,
+        ["ALRM"] = sig.SIGALRM,
+        ["TERM"] = sig.SIGTERM,
+        ["STOP"] = sig.SIGSTOP,
+        ["CONT"] = sig.SIGCONT,
+        ["USR1"] = sig.SIGUSR1,
+        ["USR2"] = sig.SIGUSR2,
+        ["TSTP"] = sig.SIGTSTP,
+        ["TTIN"] = sig.SIGTTIN,
+        ["TTOU"] = sig.SIGTTOU,
+        ["URG"] = sig.SIGURG,
+        ["XCPU"] = sig.SIGXCPU,
+        ["XFSZ"] = sig.SIGXFSZ,
+        ["VTALRM"] = sig.SIGVTALRM,
+        ["PROF"] = sig.SIGPROF,
+        ["WINCH"] = sig.SIGWINCH,
+        ["IO"] = sig.SIGIO,
+        ["PWR"] = sig.SIGPWR,
+        ["SYS"] = sig.SIGSYS,
+    }
+
+    -- Normalize signal argument
+    if type(signal) == "string" then
+        local upper = string.upper(signal)
+        local mapped = signal_map[upper]
+        if not mapped then
+            -- Try without "SIG" prefix
+            mapped = signal_map[upper:gsub("^SIG", "")]
+        end
+        if not mapped then
+            return false, "Unknown signal name: " .. signal
+        end
+        signal = mapped
+    elseif signal == nil then
+        signal = sig.SIGTERM
+    elseif type(signal) ~= "number" then
+        return false, "signal must be a number, string, or nil"
+    end
+
+    -- Validate PID
+    if type(pid) ~= "number" or pid < 1 then
+        return false, "Invalid PID"
+    end
+
+    -- Call posix.kill (returns 0 on success, nil + error on failure)
+    local ret, err = posix.kill(pid, signal)
+    if ret == 0 then
+        return true
+    else
+        return false, err or "kill failed"
+    end
+end
+
 --- Read the contents of one or more files, equivalent to the Unix `cat` command.
 --- Concatenates the contents of all given files in the order provided (no extra separators).
 --- Compatible with Lua 5.1–5.4 and LuaJIT.
