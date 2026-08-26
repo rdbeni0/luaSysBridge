@@ -301,13 +301,24 @@ function luaSysBridge.link_unlink(link_path)
     return nil, "symlink does not exist"
 end
 
---- Create a symbolic link for a single file or directory on Linux.
---- Uses the native POSIX link() function from luaposix with soft=true (no exec/ln command).
+--- Create a hard link (default) or symbolic link for a single file/directory on Linux.
+--- Uses the native POSIX link()/symlink() via luaposix (no exec/ln command).
 --- Does not overwrite existing dirs, files or symlinks at the destination.
---- @param src string The symlink target. May be absolute or relative to the destination directory.
---- @param dst string The destination path where the symlink will be created.
+---
+--- Hard link (symlink == false / nil):
+---   - Source must already exist.
+---   - Source must not be a directory (hard links to directories are not supported on most systems).
+---   - Hard links cannot span different filesystems.
+---
+--- Symbolic link (symlink == true):
+---   - Source may be missing (dangling symlink is allowed).
+---   - Directories are allowed as target.
+---
+--- @param src string The source path (existing file for hardlink; target path for symlink).
+--- @param dst string The destination path where the link will be created.
+--- @param symlink boolean|nil If true, create a symbolic link; otherwise create a hard link (default: false).
 --- @return boolean|nil, string? true on success; nil plus error message on failure.
-function luaSysBridge.link_symlink(src, dst)
+function luaSysBridge.link_link(src, dst, symlink)
     local unistd = require("posix.unistd")
     local stat = require("posix.sys.stat")
 
@@ -319,28 +330,55 @@ function luaSysBridge.link_symlink(src, dst)
         return nil, "Invalid destination path"
     end
 
+    -- false as default
+    local soft = (symlink == true)
+
+    -- Hard-link specific checks (source must exist and must not be a directory)
+    if not soft then
+        local src_st = stat.lstat(src)
+        if not src_st then
+            return nil, "Source does not exist: " .. src
+        end
+        if stat.S_ISDIR(src_st.st_mode) ~= 0 then
+            return nil, "Cannot create hard link to a directory: " .. src
+        end
+    end
+
     -- lstat() checks the destination itself, including dangling symlinks.
     if stat.lstat(dst) then
         return nil, "Destination already exists: " .. dst
     end
 
-    local ret, errstr, errnum = unistd.link(src, dst, true)
+    local ret, errstr, errnum = unistd.link(src, dst, soft)
 
     if ret ~= 0 then
-        return nil, string.format("Failed to create symlink: %s -> %s (errstr: %s, errnum: %s)", dst, src, errstr or "unknown error", tostring(errnum or "unknown"))
+        local kind = soft and "symlink" or "hardlink"
+        return nil, string.format("Failed to create %s: %s -> %s (errstr: %s, errnum: %s)", kind, dst, src, errstr or "unknown error", tostring(errnum or "unknown"))
     end
 
     return true
     -- >>>>>>>>>>>>
     -- Old implementation -> without LUAPOSIX:
-    -- Uses the native `ln -s` command and LuaFileSystem for existence checks.
+    -- Uses the native `ln` / `ln -s` command.
     --
-    -- local result = luaSysBridge.execute(string.format('ln -s "%s" "%s"', src, dst))
+    -- local flag = soft and "-s " or ""
+    -- local result = luaSysBridge.execute(string.format('ln %s"%s" "%s"', flag, src, dst))
     -- if result ~= true and result ~= 0 then
-    -- 	return nil, "Failed to create symlink: " .. dst
+    -- 	return nil, "Failed to create link: " .. dst
     -- end
     -- return true
     -- <<<<<<<<<<<<
+end
+
+--- Create a symbolic link for a single file or directory on Linux.
+--- Thin alias for link_link(src, dst, true).
+--- Uses the native POSIX link() function from luaposix with soft=true (no exec/ln command).
+--- Does not overwrite existing dirs, files or symlinks at the destination.
+--- @param src string The symlink target. May be absolute or relative to the destination directory.
+--- @param dst string The destination path where the symlink will be created.
+--- @return boolean|nil, string? true on success; nil plus error message on failure.
+function luaSysBridge.link_symlink(src, dst)
+    return luaSysBridge.link_link(src, dst, true)
 end
 
 --- Extract the base name of a path (GNU coreutils / bash basename compatible).
