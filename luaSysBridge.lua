@@ -389,6 +389,17 @@ function luaSysBridge.link_link(src, dst, symlink)
     -- <<<<<<<<<<<<
 end
 
+--- Create a hard link for a single file on Linux.
+--- Thin alias for link_link(src, dst, false).
+--- Uses the native POSIX link() function from luaposix (no exec/ln command).
+--- Does not overwrite existing dirs, files or symlinks at the destination.
+--- @param src string The source file path (must exist).
+--- @param dst string The destination path where the hard link will be created.
+--- @return boolean|nil, string? true on success; nil plus error message on failure.
+function luaSysBridge.link_hardlink(src, dst)
+    return luaSysBridge.link_link(src, dst, false)
+end
+
 --- Create a symbolic link for a single file or directory on Linux.
 --- Thin alias for link_link(src, dst, true).
 --- Uses the native POSIX link() function from luaposix with soft=true (no exec/ln command).
@@ -1877,17 +1888,6 @@ function luaSysBridge.exists_link(path, hardlink_only)
     -- but it must not be classified as a hard link.
     if is_symlink then
         return hardlink_only ~= true
-    end
-
-    --- Create a hard link for a single file on Linux.
-    --- Thin alias for link_link(src, dst, false).
-    --- Uses the native POSIX link() function from luaposix (no exec/ln command).
-    --- Does not overwrite existing dirs, files or symlinks at the destination.
-    --- @param src string The source file path (must exist).
-    --- @param dst string The destination path where the hard link will be created.
-    --- @return boolean|nil, string? true on success; nil plus error message on failure.
-    function luaSysBridge.link_hardlink(src, dst)
-        return luaSysBridge.link_link(src, dst, false)
     end
 
     -- A hard link is represented by an inode with more than one
