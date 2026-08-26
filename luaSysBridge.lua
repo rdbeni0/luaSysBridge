@@ -3106,4 +3106,12 @@ function luaSysBridge.fzf_select_and_run(prefix, dir, prompt, mode, opts)
     end
 end
 
+--- Check whether a path is a hard link.
+--- Thin wrapper around exists_link(path, true).
+--- @param path string Non-empty file system path.
+--- @return boolean True if the path is a hard link, false otherwise.
+function luaSysBridge.exists_hardlink(path)
+    return luaSysBridge.exists_link(path, true)
+end
+
 return luaSysBridge
