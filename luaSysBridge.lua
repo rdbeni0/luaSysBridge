@@ -291,14 +291,33 @@ function luaSysBridge.time(t)
     return os.time(normalized)
 end
 
---- Removes a symbolic link if it exists.
---- @param link_path string Path to the symbolic link to remove.
---- @return boolean|nil, string? true on success; nil plus error message on failure.
+--- Remove a symbolic link or hard link.
+---
+--- unlink() removes the directory entry represented by the path.
+--- For a hard link this decrements the inode's link count.
+--- For a symbolic link it removes the symbolic link itself and does
+--- not affect its target.
+---
+--- @param link_path string Path to the link to remove.
+--- @return boolean|nil true on success; nil plus error message on failure.
 function luaSysBridge.link_unlink(link_path)
-    if luaSysBridge.exists_symlink(link_path) then
-        return luaSysBridge.remove(link_path)
+    if type(link_path) ~= "string" or link_path == "" then
+        return nil, "Invalid link path"
     end
-    return nil, "symlink does not exist"
+
+    if not luaSysBridge.exists_link(link_path) then
+        return nil, "link does not exist"
+    end
+
+    local unistd = require("posix.unistd")
+
+    local ret, errstr, errnum = unistd.unlink(link_path)
+
+    if ret ~= 0 then
+        return nil, string.format("Failed to unlink: %s (errstr: %s, errnum: %s)", link_path, errstr or "unknown error", tostring(errnum or "unknown"))
+    end
+
+    return true
 end
 
 --- Create a hard link (default) or symbolic link for a single file/directory on Linux.
@@ -1816,42 +1835,68 @@ function luaSysBridge.exists_directory(path)
     return attr ~= nil and attr == "directory"
 end
 
---- Check whether a path is a symbolic link (Linux/Unix only).
---- Uses LUAPOSIX to check.
---- This function validates its argument and raises an error for invalid input.
---- @param path string Non-empty file system path to check.
---- @return boolean True if the path is a symbolic link, false otherwise.
-function luaSysBridge.exists_symlink(path)
-    -- Validate argument
+--- Check whether a path is a hard link and/or symbolic link.
+---
+--- A symbolic link is detected with lstat() and S_ISLNK().
+--- A hard link is detected by checking whether the inode has more than
+--- one link (st_nlink > 1).
+---
+--- @param path string Non-empty file system path.
+--- @param hardlink_only boolean|nil
+---   nil   -> true if path is either a symlink or a hard link
+---   true  -> true only if path is a hard link
+---   false -> true only if path is a symbolic link
+--- @return boolean True if the requested link type exists, false otherwise.
+function luaSysBridge.exists_link(path, hardlink_only)
     if type(path) ~= "string" or path == "" then
         error("Invalid path: expected a non-empty string")
     end
 
-    local sys_stat = require("posix.sys.stat")
-    -- lstat returns nil on error, table on success
-    local st = sys_stat.lstat(path)
+    if hardlink_only ~= nil and type(hardlink_only) ~= "boolean" then
+        error("Invalid hardlink_only: expected boolean or nil")
+    end
+
+    local stat = require("posix.sys.stat")
+
+    -- lstat() is important here:
+    -- for a symlink we must inspect the symlink itself, not its target.
+    local st = stat.lstat(path)
+
     if not st then
-        -- If the file does not exist or is inaccessible, it cannot be a symlink
         return false
     end
 
-    -- S_ISLNK returns non-zero if true, so compare to 0:
-    -- "int non-zero if mode represents a symbolic link"
-    return sys_stat.S_ISLNK(st.st_mode) ~= 0
+    local is_symlink = stat.S_ISLNK(st.st_mode) ~= 0
 
-    -- >>>>>>>>>>>>
-    -- Old implementation -> without LUAPOSIX:
-    -- Uses the external shell "test -L" command.
-    --
-    -- -- Escape path to handle spaces and special characters.
-    -- -- Use single quotes and escape single quotes inside the path.
-    -- local escaped_path = "'" .. path:gsub("'", "'\\''") .. "'"
-    -- local cmd = "test -L " .. escaped_path
+    -- Explicit symlink-only mode.
+    if hardlink_only == false then
+        return is_symlink
+    end
 
-    -- -- Execute the test command; success == true means path is a symlink.
-    -- local success, _ = luaSysBridge.execute(cmd)
-    -- return success
-    -- <<<<<<<<<<<<
+    -- A symlink is a link in the default "any link" mode,
+    -- but it must not be classified as a hard link.
+    if is_symlink then
+        return hardlink_only ~= true
+    end
+
+    -- A hard link is represented by an inode with more than one
+    -- directory entry referring to it.
+    local is_hardlink = (st.st_nlink or 1) > 1
+
+    if hardlink_only == true then
+        return is_hardlink
+    end
+
+    -- Default: either symbolic link or hard link.
+    return is_hardlink
+end
+
+--- Check whether a path is a symbolic link.
+--- Thin wrapper around exists_link(path, false).
+--- @param path string Non-empty file system path.
+--- @return boolean True if the path is a symbolic link, false otherwise.
+function luaSysBridge.exists_symlink(path)
+    return luaSysBridge.exists_link(path, false)
 end
 
 --- Create (if needed) or update a file's timestamps, equivalent to shell "touch".
