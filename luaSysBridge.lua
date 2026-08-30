@@ -1867,6 +1867,30 @@ function luaSysBridge.replace_in_file_line(filePath, startsWith, newLine)
     return true
 end
 
+--- Check whether a path is a Unix domain socket (Linux/Unix only).
+--- Uses LUAPOSIX to check.
+--- This function validates its argument and raises an error for invalid input.
+--- @param path string Non-empty file system path to check.
+--- @return boolean True if the path exists and is a socket, false otherwise.
+function luaSysBridge.exists_socket(path)
+    -- Validate argument
+    if type(path) ~= "string" or path == "" then
+        error("Invalid path: expected a non-empty string")
+    end
+
+    local sys_stat = require("posix.sys.stat")
+    -- lstat returns nil on error, table on success
+    local st = sys_stat.lstat(path)
+    if not st then
+        -- If the path does not exist or is inaccessible, it cannot be a socket
+        return false
+    end
+
+    -- S_ISSOCK returns non-zero if true, so compare to 0:
+    -- "int non-zero if mode represents a socket"
+    return sys_stat.S_ISSOCK(st.st_mode) ~= 0
+end
+
 --- Check whether a path points to an existing regular file.
 --- Implementation without lfs is possible but will be slower.
 --- @param path string Path to the file.
