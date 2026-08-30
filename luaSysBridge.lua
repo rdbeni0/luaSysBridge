@@ -678,6 +678,53 @@ function luaSysBridge.setsid()
     return sid
 end
 
+--- Redirect stdin, stdout and stderr to /dev/null.
+--- Compatible with Lua 5.1–5.4 and LuaJIT.
+--- Uses LUAPOSIX (posix.fcntl.open + posix.unistd.dup2 / close).
+---
+--- Typical use: call in a forked child *after* setsid() and *before*
+--- execvp, so the process is fully detached from the controlling terminal
+--- and does not print anything to the original TTY.
+---
+--- @return boolean true on success
+--- @return string|nil err Error message on failure
+function luaSysBridge.stdio_to_devnull()
+    local unistd = require("posix.unistd")
+    local fcntl  = require("posix.fcntl")
+
+    local fd, errstr, errnum = fcntl.open("/dev/null", fcntl.O_RDWR)
+    if not fd then
+        return false, string.format("stdio_to_devnull: cannot open /dev/null: %s (errno %s)",
+            errstr or "unknown error", tostring(errnum or "unknown"))
+    end
+
+    -- Best-effort: if any dup2 fails we still try the others, then report the first error
+    local first_err = nil
+
+    local function do_dup2(target_fd, name)
+        local ok, e, n = unistd.dup2(fd, target_fd)
+        if ok == nil then
+            if not first_err then
+                first_err = string.format("stdio_to_devnull: dup2 %s failed: %s (errno %s)",
+                    name, e or "unknown error", tostring(n or "unknown"))
+            end
+        end
+    end
+
+    do_dup2(0, "stdin")
+    do_dup2(1, "stdout")
+    do_dup2(2, "stderr")
+
+    if fd > 2 then
+        unistd.close(fd)
+    end
+
+    if first_err then
+        return false, first_err
+    end
+    return true
+end
+
 --- Send a signal to a process (POSIX kill).
 --- @param pid number Process ID (must be a positive integer)
 --- @param signal string|number|nil Signal name (e.g. "TERM", "KILL", "0") or number.
