@@ -119,6 +119,45 @@ function luaSysBridge.execvp(file, args)
     return nil, string.format("execvp failed for %q: %s (errno %d)", file, errmsg, errnum), errnum
 end
 
+--- Create a new process by duplicating the current one (POSIX fork).
+--- Compatible with Lua 5.1–5.4 and LuaJIT.
+--- Uses LUAPOSIX posix.unistd.fork.
+---
+--- On success:
+---   - In the child process: returns 0
+---   - In the parent process: returns the child's PID (positive integer)
+--- On failure: returns nil plus error message (and optionally errnum).
+---
+--- Note: after a successful fork both processes continue from this point.
+--- Typical pattern:
+---   local pid, err = luaSysBridge.fork()
+---   if not pid then
+---       -- error
+---   elseif pid == 0 then
+---       -- child
+---   else
+---       -- parent (pid is the child PID)
+---   end
+---
+--- @return integer|nil pid  0 in child, child PID in parent, or nil on error
+--- @return string|nil err   Error message on failure
+--- @return integer|nil errnum  errno on failure (when available)
+function luaSysBridge.fork()
+    local unistd = require("posix.unistd")
+
+    local pid, errstr, errnum = unistd.fork()
+
+    if pid == nil then
+        return nil,
+            string.format("fork failed: %s (errno %s)",
+                errstr or "unknown error",
+                tostring(errnum or "unknown")),
+            errnum
+    end
+
+    return pid
+end
+
 --- Create directories recursively, equivalent to the shell command "mkdir -p"
 --- @param path string Directory path to create
 --- @return boolean success true when directory exists or was created successfully, false otherwise
