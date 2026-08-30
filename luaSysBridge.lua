@@ -640,6 +640,44 @@ function luaSysBridge.chown(path, owner, group)
     return true
 end
 
+--- Create a new session and become its leader (POSIX setsid).
+--- Compatible with Lua 5.1–5.4 and LuaJIT.
+--- Uses LUAPOSIX posix.unistd.setpid("s", ...) which maps to setsid(2).
+---
+--- After a successful call the current process:
+---   - becomes the session leader of a new session,
+---   - becomes the process-group leader of a new process group,
+---   - has no controlling terminal.
+---
+--- Typical use: call this in a forked child *before* execvp, so the
+--- child is detached from the parent's terminal (avoids the shell
+--- hanging / waiting for Enter after the process exits).
+---
+--- Note: setsid() fails with EPERM if the caller is already a process
+--- group leader.  That is why it is normally called only in a child
+--- after fork() (the child is never a process-group leader).
+---
+--- @return integer|nil sid  New session ID on success, or nil on error
+--- @return string|nil err   Error message on failure
+--- @return integer|nil errnum  errno on failure (when available)
+function luaSysBridge.setsid()
+    local unistd = require("posix.unistd")
+
+    -- luaposix exposes setsid via setpid("s", ...); the second argument
+    -- is ignored for the "s" operation but is required by the binding.
+    local sid, errstr, errnum = unistd.setpid("s", 0)
+
+    if sid == nil then
+        return nil,
+            string.format("setsid failed: %s (errno %s)",
+                errstr or "unknown error",
+                tostring(errnum or "unknown")),
+            errnum
+    end
+
+    return sid
+end
+
 --- Send a signal to a process (POSIX kill).
 --- @param pid number Process ID (must be a positive integer)
 --- @param signal string|number|nil Signal name (e.g. "TERM", "KILL", "0") or number.
