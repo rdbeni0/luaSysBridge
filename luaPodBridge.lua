@@ -1007,33 +1007,45 @@ end
 -- YAML, docker-compose.yml helpers
 -------------------------------------------------------------------------------
 
---- Apply YAML tags to generated YAML text.
+--- Apply YAML tags to generated YAML text using YAML paths.
 ---
 --- Each tag definition is a table containing:
----   pattern string  Lua pattern used to find the YAML key
----   tag     string  YAML tag to append after the matched key
----   count   integer|nil Number of replacements; default 1, 0 means all
+---   path string YAML path to the key. Dot-separated components are used.
+---         The '*' component matches any single path component.
+---   tag  string YAML tag to append after the matched key.
+---   count number|nil Maximum number of matches. Defaults to 1.
+---         Use 0 to replace all matches.
 ---
---- Example:
----   {
----       {
----           pattern = "([ \t]*ports:)",
----           tag = "!override",
----       },
----   }
+--- Examples:
+---     {
+---         {
+---             path = "services.api.ports",
+---             tag = "!override",
+---         },
+---     }
 ---
 --- turns:
----   ports:
+---     services:
+---       api:
+---         ports:
 ---
 --- into:
----   ports: !override
+---     services:
+---       api:
+---         ports: !override
 ---
---- The pattern should normally include the YAML key together with its
---- indentation. This avoids depending on the exact indentation generated
---- by the YAML serializer.
+--- A wildcard can be used to match any single path component:
+---
+---     {
+---         {
+---             path = "services.*.ports",
+---             tag = "!override",
+---             count = 0,
+---         },
+---     }
 ---
 --- @param yaml_content string Generated YAML content
---- @param yaml_tags table|nil Array of tag definitions
+--- @param yaml_tags table|nil Array of YAML tag definitions
 --- @return string|nil content Modified YAML content
 --- @return string|nil err Error message
 local function yaml_apply_tags(yaml_content, yaml_tags)
@@ -1045,49 +1057,132 @@ local function yaml_apply_tags(yaml_content, yaml_tags)
         return nil, "yaml_apply_tags(): yaml_tags must be a table or nil"
     end
 
-    for index, definition in ipairs(yaml_tags) do
-        if type(definition) ~= "table" then
-            return nil, string.format("yaml_apply_tags(): tag definition #%d must be a table", index)
+    local function split_path(path)
+        local result = {}
+
+        for component in path:gmatch("[^%.]+") do
+            result[#result + 1] = component
         end
 
-        local pattern = definition.pattern
-        local tag = definition.tag
-        local count = definition.count
+        return result
+    end
 
-        if type(pattern) ~= "string" or pattern == "" then
-            return nil, string.format("yaml_apply_tags(): tag definition #%d has invalid pattern", index)
+    local function path_matches(path, pattern)
+        if #path ~= #pattern then
+            return false
         end
 
-        if type(tag) ~= "string" or tag == "" then
-            return nil, string.format("yaml_apply_tags(): tag definition #%d has invalid tag", index)
+        for index, component in ipairs(pattern) do
+            if component ~= "*" and component ~= path[index] then
+                return false
+            end
         end
 
-        if count ~= nil and type(count) ~= "number" then
-            return nil, string.format("yaml_apply_tags(): tag definition #%d count must be a number or nil", index)
-        end
+        return true
+    end
 
-        -- Validate the Lua pattern before modifying the YAML.
-        local pattern_ok, pattern_err = pcall(function()
-            return yaml_content:find(pattern)
-        end)
+    local lines = {}
 
-        if not pattern_ok then
-            return nil, string.format("yaml_apply_tags(): invalid pattern in definition #%d: %s", index, tostring(pattern_err))
-        end
-
-        local replacement_count
-        local replacement_limit = count or 1
-
-        yaml_content, replacement_count = yaml_content:gsub(pattern, function(match)
-            return match .. " " .. tag
-        end, replacement_limit)
-
-        if replacement_count == 0 then
-            return nil, string.format("yaml_apply_tags(): pattern did not match YAML: %s", pattern)
+    for line in yaml_content:gmatch("([^\n]*)\n?") do
+        if line ~= "" or #lines > 0 then
+            lines[#lines + 1] = line
         end
     end
 
-    return yaml_content
+    for index, definition in ipairs(yaml_tags) do
+        if type(definition) ~= "table" then
+            return nil, string.format(
+                "yaml_apply_tags(): tag definition #%d must be a table",
+                index
+            )
+        end
+
+        local path = definition.path
+        local tag = definition.tag
+        local count = definition.count
+
+        if type(path) ~= "string" or path == "" then
+            return nil, string.format(
+                "yaml_apply_tags(): tag definition #%d has invalid path",
+                index
+            )
+        end
+
+        if type(tag) ~= "string" or tag == "" then
+            return nil, string.format(
+                "yaml_apply_tags(): tag definition #%d has invalid tag",
+                index
+            )
+        end
+
+        if count ~= nil and type(count) ~= "number" then
+            return nil, string.format(
+                "yaml_apply_tags(): tag definition #%d count must be a number or nil",
+                index
+            )
+        end
+
+        local path_pattern = split_path(path)
+        local replacement_limit = count or 1
+        local replacement_count = 0
+
+        local stack = {}
+
+        for line_index, line in ipairs(lines) do
+            -- Ignore empty lines and YAML document markers.
+            if line ~= ""
+                and line ~= "---"
+                and line ~= "..."
+            then
+                local indentation = line:match("^(%s*)")
+                local indent_length = #indentation
+
+                local key = line:match("^%s*([^%s:#][^:]*):")
+
+                if key then
+                    key = key:gsub("%s+$", "")
+
+                    -- Remove stack entries at the current or deeper level.
+                    while #stack > 0
+                        and stack[#stack].indent >= indent_length
+                    do
+                        stack[#stack] = nil
+                    end
+
+                    stack[#stack + 1] = {
+                        indent = indent_length,
+                        key = key,
+                    }
+
+                    local current_path = {}
+
+                    for stack_index, entry in ipairs(stack) do
+                        current_path[stack_index] = entry.key
+                    end
+
+                    if path_matches(current_path, path_pattern) then
+                        if replacement_limit == 0
+                            or replacement_count < replacement_limit
+                        then
+                            if not line:find(":%s*!" .. tag:sub(2), 1) then
+                                lines[line_index] = line .. " " .. tag
+                                replacement_count = replacement_count + 1
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        if replacement_count == 0 then
+            return nil, string.format(
+                "yaml_apply_tags(): path did not match YAML: %s",
+                path
+            )
+        end
+    end
+
+    return table.concat(lines, "\n")
 end
 
 --- Write a Docker Compose configuration to a YAML file.
