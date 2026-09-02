@@ -1004,7 +1004,7 @@ function luaPodBridge.images_get_names(opts)
 end
 
 -------------------------------------------------------------------------------
--- YAML, deploy-compose.yml helpers
+-- YAML, docker-compose.yml helpers
 -------------------------------------------------------------------------------
 
 --- Apply YAML tags to generated YAML text.
