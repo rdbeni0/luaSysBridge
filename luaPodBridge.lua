@@ -133,24 +133,34 @@ function luaPodBridge.env_write(path, data, opts)
     return true
 end
 
---- Update or add variables inside an existing .env file.
+--- Update variables in an existing .env file.
 ---
---- - Existing keys that appear in `updates` are replaced (value changed).
---- - Keys that do not yet exist are appended at the end.
---- - Comments, blank lines and unknown keys are preserved in their
----   original order.
---- - The final newline is guaranteed.
+--- Existing variables are replaced in place.
+--- Commented variables matching the update are uncommented and replaced.
+--- Missing variables are appended to the end of the file.
+--- Comments, blank lines and unrelated variables are preserved.
+---
+--- The file is created if it does not exist.
+---
+--- Example:
+---     luaPodBridge.env_update(
+---         "./.env",
+---         {
+---             PORT = "3080",
+---             MISTRAL_API_KEY = "123test456",
+---         }
+---     )
 ---
 --- Optional third argument `opts`:
----   opts.chmod  string|number   permission mode (e.g. "644", 644, "0644")
----   opts.chown  string|number   owner (user name or uid)
----   opts.group  string|number   group (optional, used together with chown)
+---     opts.chmod    string|number Permission mode (e.g. "644", 644, "0644")
+---     opts.chown    string|number Owner (user name or uid)
+---     opts.group    string|number Group
 ---
---- @param path    string  Path to the .env file (created if missing)
---- @param updates table   Map of { KEY = "new_value", ... }
---- @param opts    table|nil Optional { chmod = "...", chown = "...", group = "..." }
---- @return boolean true on success
---- @return string|nil error message on failure
+--- @param path string Path to the .env file.
+--- @param updates table Map of variable names to values.
+--- @param opts table|nil Optional file permission and ownership options.
+--- @return boolean success True if the file was updated successfully.
+--- @return string|nil err Error message if the operation failed.
 function luaPodBridge.env_update(path, updates, opts)
     if type(path) ~= "string" or path == "" then
         return false, "env_update(): path must be a non-empty string"
@@ -166,50 +176,58 @@ function luaPodBridge.env_update(path, updates, opts)
         return false, "env_update(): opts must be a table or nil"
     end
 
-    -- Read current content (empty table when file does not exist).
     local current_lines = {}
 
-    local f = io.open(path, "r")
-
-    if f then
-        for line in f:lines() do
+    local file = io.open(path, "r")
+    if file then
+        for line in file:lines() do
             current_lines[#current_lines + 1] = line
         end
 
-        f:close()
+        file:close()
     end
 
-    -- Track which keys we have already replaced.
-    local replaced = {}
     local new_lines = {}
+    local replaced = {}
 
     for _, line in ipairs(current_lines) do
-        -- Match KEY=... (allow spaces around =, ignore comments).
+        -- Match an active variable:
+        -- KEY=value
         local key = line:match("^%s*([%w_]+)%s*=")
 
-        if key and updates[key] ~= nil then
-            new_lines[#new_lines + 1] = key .. "=" .. tostring(updates[key])
+        -- Match a commented variable:
+        -- # KEY=value
+        -- #KEY=value
+        local commented_key = line:match("^%s*#%s*([%w_]+)%s*=")
 
-            replaced[key] = true
+        local update_key = key or commented_key
+
+        if update_key and updates[update_key] ~= nil then
+            new_lines[#new_lines + 1] = update_key .. "=" .. tostring(updates[update_key])
+
+            replaced[update_key] = true
         else
-            -- Keep original line (comment, blank, or unrelated key).
             new_lines[#new_lines + 1] = line
         end
     end
 
-    -- Append keys that were not present in the original file.
+    -- Append variables which were not present in the file.
     local missing_keys = {}
 
-    for k in pairs(updates) do
-        if not replaced[k] then
-            missing_keys[#missing_keys + 1] = k
+    for key in pairs(updates) do
+        if type(key) ~= "string" then
+            return false, "env_update(): update keys must be strings"
+        end
+
+        if not replaced[key] then
+            missing_keys[#missing_keys + 1] = key
         end
     end
 
     table.sort(missing_keys)
 
-    for _, k in ipairs(missing_keys) do
-        new_lines[#new_lines + 1] = k .. "=" .. tostring(updates[k])
+    for _, key in ipairs(missing_keys) do
+        new_lines[#new_lines + 1] = key .. "=" .. tostring(updates[key])
     end
 
     local content = table.concat(new_lines, "\n")
@@ -219,7 +237,6 @@ function luaPodBridge.env_update(path, updates, opts)
     end
 
     local out, err = io.open(path, "w")
-
     if not out then
         return false, "env_update(): cannot open " .. path .. " for writing: " .. tostring(err)
     end
@@ -231,7 +248,6 @@ function luaPodBridge.env_update(path, updates, opts)
         return false, "env_update(): write failed: " .. tostring(write_err)
     end
 
-    -- Optional post-write chmod / chown.
     if opts.chmod then
         local ok_chmod, err_chmod = luaSysBridge.chmod(path, opts.chmod)
 
@@ -1091,10 +1107,7 @@ local function yaml_apply_tags(yaml_content, yaml_tags)
 
     for index, definition in ipairs(yaml_tags) do
         if type(definition) ~= "table" then
-            return nil, string.format(
-                "yaml_apply_tags(): tag definition #%d must be a table",
-                index
-            )
+            return nil, string.format("yaml_apply_tags(): tag definition #%d must be a table", index)
         end
 
         local path = definition.path
@@ -1102,24 +1115,15 @@ local function yaml_apply_tags(yaml_content, yaml_tags)
         local count = definition.count
 
         if type(path) ~= "string" or path == "" then
-            return nil, string.format(
-                "yaml_apply_tags(): tag definition #%d has invalid path",
-                index
-            )
+            return nil, string.format("yaml_apply_tags(): tag definition #%d has invalid path", index)
         end
 
         if type(tag) ~= "string" or tag == "" then
-            return nil, string.format(
-                "yaml_apply_tags(): tag definition #%d has invalid tag",
-                index
-            )
+            return nil, string.format("yaml_apply_tags(): tag definition #%d has invalid tag", index)
         end
 
         if count ~= nil and type(count) ~= "number" then
-            return nil, string.format(
-                "yaml_apply_tags(): tag definition #%d count must be a number or nil",
-                index
-            )
+            return nil, string.format("yaml_apply_tags(): tag definition #%d count must be a number or nil", index)
         end
 
         local path_pattern = split_path(path)
@@ -1130,10 +1134,7 @@ local function yaml_apply_tags(yaml_content, yaml_tags)
 
         for line_index, line in ipairs(lines) do
             -- Ignore empty lines and YAML document markers.
-            if line ~= ""
-                and line ~= "---"
-                and line ~= "..."
-            then
+            if line ~= "" and line ~= "---" and line ~= "..." then
                 local indentation = line:match("^(%s*)")
                 local indent_length = #indentation
 
@@ -1143,9 +1144,7 @@ local function yaml_apply_tags(yaml_content, yaml_tags)
                     key = key:gsub("%s+$", "")
 
                     -- Remove stack entries at the current or deeper level.
-                    while #stack > 0
-                        and stack[#stack].indent >= indent_length
-                    do
+                    while #stack > 0 and stack[#stack].indent >= indent_length do
                         stack[#stack] = nil
                     end
 
@@ -1161,9 +1160,7 @@ local function yaml_apply_tags(yaml_content, yaml_tags)
                     end
 
                     if path_matches(current_path, path_pattern) then
-                        if replacement_limit == 0
-                            or replacement_count < replacement_limit
-                        then
+                        if replacement_limit == 0 or replacement_count < replacement_limit then
                             if not line:find(":%s*!" .. tag:sub(2), 1) then
                                 lines[line_index] = line .. " " .. tag
                                 replacement_count = replacement_count + 1
@@ -1175,10 +1172,7 @@ local function yaml_apply_tags(yaml_content, yaml_tags)
         end
 
         if replacement_count == 0 then
-            return nil, string.format(
-                "yaml_apply_tags(): path did not match YAML: %s",
-                path
-            )
+            return nil, string.format("yaml_apply_tags(): path did not match YAML: %s", path)
         end
     end
 
