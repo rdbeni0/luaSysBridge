@@ -19,8 +19,10 @@
 ---
 --- Dependencies:
 ---   - the same as luaSysBridge
+---   - lyaml: https://github.com/gvvaughan/lyaml , https://gvvaughan.github.io/lyaml
 
 local luaSysBridge = require("luaSysBridge")
+local lyaml = require("lyaml")
 
 local luaPodBridge = {}
 
@@ -999,6 +1001,179 @@ function luaPodBridge.images_get_names(opts)
     end
 
     return results
+end
+
+-------------------------------------------------------------------------------
+-- YAML, deploy-compose.yml helpers
+-------------------------------------------------------------------------------
+
+--- Apply YAML tags to generated YAML text.
+---
+--- Each tag definition is a table containing:
+---   pattern string  Lua pattern used to find the YAML key
+---   tag     string  YAML tag to append after the matched key
+---   count   integer|nil Number of replacements; default 1, 0 means all
+---
+--- Example:
+---   {
+---       {
+---           pattern = "([ \t]*ports:)",
+---           tag = "!override",
+---       },
+---   }
+---
+--- turns:
+---   ports:
+---
+--- into:
+---   ports: !override
+---
+--- The pattern should normally include the YAML key together with its
+--- indentation. This avoids depending on the exact indentation generated
+--- by the YAML serializer.
+---
+--- @param yaml_content string Generated YAML content
+--- @param yaml_tags table|nil Array of tag definitions
+--- @return string|nil content Modified YAML content
+--- @return string|nil err Error message
+local function yaml_apply_tags(yaml_content, yaml_tags)
+    if yaml_tags == nil then
+        return yaml_content
+    end
+
+    if type(yaml_tags) ~= "table" then
+        return nil, "yaml_apply_tags(): yaml_tags must be a table or nil"
+    end
+
+    for index, definition in ipairs(yaml_tags) do
+        if type(definition) ~= "table" then
+            return nil, string.format("yaml_apply_tags(): tag definition #%d must be a table", index)
+        end
+
+        local pattern = definition.pattern
+        local tag = definition.tag
+        local count = definition.count
+
+        if type(pattern) ~= "string" or pattern == "" then
+            return nil, string.format("yaml_apply_tags(): tag definition #%d has invalid pattern", index)
+        end
+
+        if type(tag) ~= "string" or tag == "" then
+            return nil, string.format("yaml_apply_tags(): tag definition #%d has invalid tag", index)
+        end
+
+        if count ~= nil and type(count) ~= "number" then
+            return nil, string.format("yaml_apply_tags(): tag definition #%d count must be a number or nil", index)
+        end
+
+        -- Validate the Lua pattern before modifying the YAML.
+        local pattern_ok, pattern_err = pcall(function()
+            return yaml_content:find(pattern)
+        end)
+
+        if not pattern_ok then
+            return nil, string.format("yaml_apply_tags(): invalid pattern in definition #%d: %s", index, tostring(pattern_err))
+        end
+
+        local replacement_count
+        local replacement_limit = count or 1
+
+        yaml_content, replacement_count = yaml_content:gsub(pattern, function(match)
+            return match .. " " .. tag
+        end, replacement_limit)
+
+        if replacement_count == 0 then
+            return nil, string.format("yaml_apply_tags(): pattern did not match YAML: %s", pattern)
+        end
+    end
+
+    return yaml_content
+end
+
+--- Write a Docker Compose configuration to a YAML file.
+---
+--- The configuration is serialized using lyaml. Optional YAML tags can be
+--- applied to selected YAML keys after serialization, which is useful for
+--- Docker Compose-specific tags such as `!override` and `!reset` that lyaml
+--- does not emit directly.
+---
+--- Example:
+---     luaPodBridge.write_docker_compose(
+---         "./docker-compose.override.yaml",
+---         {
+---             services = {
+---                 api = {
+---                     ports = {
+---                         "57241:3080",
+---                     },
+---                 },
+---             },
+---         },
+---         {
+---             yaml_tags = {
+---                 {
+---                     pattern = "([ \t]*ports:)",
+---                     tag = "!override",
+---                 },
+---             },
+---         }
+---     )
+---
+--- @param docker_compose_file string Path to the Docker Compose YAML file.
+--- @param docker_compose_tbl table Docker Compose configuration to serialize.
+--- @param opts table|nil Optional serialization and YAML tag options.
+--- @param opts.yaml_tags table|nil List of YAML tag definitions to apply.
+--- @param opts.yaml_tags[].pattern string Lua pattern matching the YAML key.
+--- @param opts.yaml_tags[].tag string YAML tag to append to the matched key.
+--- @param opts.yaml_tags[].count number|nil Maximum number of replacements;
+---        defaults to 1. Use 0 to replace all matches.
+--- @return boolean success True if the file was written successfully.
+--- @return string|nil err Error message if the operation failed.
+function luaPodBridge.write_docker_compose(docker_compose_file, docker_compose_tbl, opts)
+    if type(docker_compose_file) ~= "string" or docker_compose_file == "" then
+        return false, "write_docker_compose(): docker_compose_file must be a non-empty string"
+    end
+
+    if type(docker_compose_tbl) ~= "table" then
+        return false, "write_docker_compose(): docker_compose_tbl must be a table"
+    end
+
+    if opts ~= nil and type(opts) ~= "table" then
+        return false, "write_docker_compose(): opts must be a table or nil"
+    end
+
+    opts = opts or {}
+
+    local yaml_content, err = lyaml.dump({
+        docker_compose_tbl,
+    })
+
+    if not yaml_content then
+        return false, "write_docker_compose(): Lyaml could not generate YAML: " .. tostring(err)
+    end
+
+    if opts.yaml_tags then
+        yaml_content, err = yaml_apply_tags(yaml_content, opts.yaml_tags)
+
+        if not yaml_content then
+            return false, "write_docker_compose(): " .. tostring(err)
+        end
+    end
+
+    local fh, open_err = io.open(docker_compose_file, "w")
+
+    if not fh then
+        return false, string.format("write_docker_compose(): failed to open %s for writing: %s", docker_compose_file, tostring(open_err))
+    end
+
+    local ok, write_err = fh:write(yaml_content)
+    fh:close()
+
+    if not ok then
+        return false, "write_docker_compose(): write failed: " .. tostring(write_err)
+    end
+
+    return true
 end
 
 return luaPodBridge
