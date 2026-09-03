@@ -1028,7 +1028,7 @@ end
 --- Each tag definition is a table containing:
 ---   path string YAML path to the key. Dot-separated components are used.
 ---         The '*' component matches any single path component.
----   tag  string YAML tag to append after the matched key.
+---   tag  string YAML tag to apply to the matched key.
 ---   count number|nil Maximum number of matches. Defaults to 1.
 ---         Use 0 to replace all matches.
 ---
@@ -1044,11 +1044,21 @@ end
 ---     services:
 ---       api:
 ---         ports:
+---         - 57241:3080
 ---
 --- into:
 ---     services:
 ---       api:
 ---         ports: !override
+---         - 57241:3080
+---
+--- Inline values are also supported:
+---
+---     volumes: []
+---
+--- becomes:
+---
+---     volumes: !override []
 ---
 --- A wildcard can be used to match any single path component:
 ---
@@ -1161,8 +1171,44 @@ local function yaml_apply_tags(yaml_content, yaml_tags)
 
                     if path_matches(current_path, path_pattern) then
                         if replacement_limit == 0 or replacement_count < replacement_limit then
-                            if not line:find(":%s*!" .. tag:sub(2), 1) then
-                                lines[line_index] = line .. " " .. tag
+                            -- Do not apply the same tag twice.
+                            local already_tagged = line:match(":%s*" .. tag:gsub("([^%w])", "%%%1"))
+
+                            if not already_tagged then
+                                -- Check whether the key already has an
+                                -- inline YAML value.
+                                local key_end = line:find(":", 1, true)
+
+                                local prefix = line:sub(1, key_end)
+                                local value = line:sub(key_end + 1)
+
+                                -- Preserve the indentation and formatting
+                                -- before the key/value.
+                                local leading_whitespace = line:match("^(%s*)") or ""
+
+                                local value_without_leading = value:match("^%s*(.*)$") or ""
+
+                                if value_without_leading ~= "" then
+                                    -- Inline value, for example:
+                                    --
+                                    --     volumes: []
+                                    --
+                                    -- Must become:
+                                    --
+                                    --     volumes: !override []
+                                    lines[line_index] = prefix .. " " .. tag .. " " .. value_without_leading
+                                else
+                                    -- Block value, for example:
+                                    --
+                                    --     volumes:
+                                    --     - foo
+                                    --
+                                    -- Must become:
+                                    --
+                                    --     volumes: !override
+                                    lines[line_index] = leading_whitespace .. key .. ": " .. tag
+                                end
+
                                 replacement_count = replacement_count + 1
                             end
                         end
