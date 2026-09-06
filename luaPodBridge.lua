@@ -19,10 +19,8 @@
 ---
 --- Dependencies:
 ---   - the same as luaSysBridge
----   - lyaml: https://github.com/gvvaughan/lyaml , https://gvvaughan.github.io/lyaml
 
 local luaSysBridge = require("luaSysBridge")
-local lyaml = require("lyaml")
 
 local luaPodBridge = {}
 
@@ -1020,217 +1018,16 @@ function luaPodBridge.images_get_names(opts)
 end
 
 -------------------------------------------------------------------------------
--- YAML, docker-compose.yml helpers
+-- docker-compose.yml and YAML helpers
 -------------------------------------------------------------------------------
-
---- Apply YAML tags to generated YAML text using YAML paths.
----
---- Each tag definition is a table containing:
----   path string YAML path to the key. Dot-separated components are used.
----         The '*' component matches any single path component.
----   tag  string YAML tag to apply to the matched key.
----   count number|nil Maximum number of matches. Defaults to 1.
----         Use 0 to replace all matches.
----
---- Examples:
----     {
----         {
----             path = "services.api.ports",
----             tag = "!override",
----         },
----     }
----
---- turns:
----     services:
----       api:
----         ports:
----         - 57241:3080
----
---- into:
----     services:
----       api:
----         ports: !override
----         - 57241:3080
----
---- Inline values are also supported:
----
----     volumes: []
----
---- becomes:
----
----     volumes: !override []
----
---- A wildcard can be used to match any single path component:
----
----     {
----         {
----             path = "services.*.ports",
----             tag = "!override",
----             count = 0,
----         },
----     }
----
---- @param yaml_content string Generated YAML content
---- @param yaml_tags table|nil Array of YAML tag definitions
---- @return string|nil content Modified YAML content
---- @return string|nil err Error message
-local function yaml_apply_tags(yaml_content, yaml_tags)
-    if yaml_tags == nil then
-        return yaml_content
-    end
-
-    if type(yaml_tags) ~= "table" then
-        return nil, "yaml_apply_tags(): yaml_tags must be a table or nil"
-    end
-
-    local function split_path(path)
-        local result = {}
-
-        for component in path:gmatch("[^%.]+") do
-            result[#result + 1] = component
-        end
-
-        return result
-    end
-
-    local function path_matches(path, pattern)
-        if #path ~= #pattern then
-            return false
-        end
-
-        for index, component in ipairs(pattern) do
-            if component ~= "*" and component ~= path[index] then
-                return false
-            end
-        end
-
-        return true
-    end
-
-    local lines = {}
-
-    for line in yaml_content:gmatch("([^\n]*)\n?") do
-        if line ~= "" or #lines > 0 then
-            lines[#lines + 1] = line
-        end
-    end
-
-    for index, definition in ipairs(yaml_tags) do
-        if type(definition) ~= "table" then
-            return nil, string.format("yaml_apply_tags(): tag definition #%d must be a table", index)
-        end
-
-        local path = definition.path
-        local tag = definition.tag
-        local count = definition.count
-
-        if type(path) ~= "string" or path == "" then
-            return nil, string.format("yaml_apply_tags(): tag definition #%d has invalid path", index)
-        end
-
-        if type(tag) ~= "string" or tag == "" then
-            return nil, string.format("yaml_apply_tags(): tag definition #%d has invalid tag", index)
-        end
-
-        if count ~= nil and type(count) ~= "number" then
-            return nil, string.format("yaml_apply_tags(): tag definition #%d count must be a number or nil", index)
-        end
-
-        local path_pattern = split_path(path)
-        local replacement_limit = count or 1
-        local replacement_count = 0
-
-        local stack = {}
-
-        for line_index, line in ipairs(lines) do
-            -- Ignore empty lines and YAML document markers.
-            if line ~= "" and line ~= "---" and line ~= "..." then
-                local indentation = line:match("^(%s*)")
-                local indent_length = #indentation
-
-                local key = line:match("^%s*([^%s:#][^:]*):")
-
-                if key then
-                    key = key:gsub("%s+$", "")
-
-                    -- Remove stack entries at the current or deeper level.
-                    while #stack > 0 and stack[#stack].indent >= indent_length do
-                        stack[#stack] = nil
-                    end
-
-                    stack[#stack + 1] = {
-                        indent = indent_length,
-                        key = key,
-                    }
-
-                    local current_path = {}
-
-                    for stack_index, entry in ipairs(stack) do
-                        current_path[stack_index] = entry.key
-                    end
-
-                    if path_matches(current_path, path_pattern) then
-                        if replacement_limit == 0 or replacement_count < replacement_limit then
-                            -- Do not apply the same tag twice.
-                            local already_tagged = line:match(":%s*" .. tag:gsub("([^%w])", "%%%1"))
-
-                            if not already_tagged then
-                                -- Check whether the key already has an
-                                -- inline YAML value.
-                                local key_end = line:find(":", 1, true)
-
-                                local prefix = line:sub(1, key_end)
-                                local value = line:sub(key_end + 1)
-
-                                -- Preserve the indentation and formatting
-                                -- before the key/value.
-                                local leading_whitespace = line:match("^(%s*)") or ""
-
-                                local value_without_leading = value:match("^%s*(.*)$") or ""
-
-                                if value_without_leading ~= "" then
-                                    -- Inline value, for example:
-                                    --
-                                    --     volumes: []
-                                    --
-                                    -- Must become:
-                                    --
-                                    --     volumes: !override []
-                                    lines[line_index] = prefix .. " " .. tag .. " " .. value_without_leading
-                                else
-                                    -- Block value, for example:
-                                    --
-                                    --     volumes:
-                                    --     - foo
-                                    --
-                                    -- Must become:
-                                    --
-                                    --     volumes: !override
-                                    lines[line_index] = leading_whitespace .. key .. ": " .. tag
-                                end
-
-                                replacement_count = replacement_count + 1
-                            end
-                        end
-                    end
-                end
-            end
-        end
-
-        if replacement_count == 0 then
-            return nil, string.format("yaml_apply_tags(): path did not match YAML: %s", path)
-        end
-    end
-
-    return table.concat(lines, "\n")
-end
 
 --- Write a Docker Compose configuration to a YAML file.
 ---
 --- The configuration is serialized using lyaml. Optional YAML tags can be
---- applied to selected YAML keys after serialization, which is useful for
---- Docker Compose-specific tags such as `!override` and `!reset` that lyaml
---- does not emit directly.
+--- applied to selected YAML keys after serialization (useful for
+--- Docker Compose-specific tags such as `!override` and `!reset`).
+---
+--- The write is atomic (temporary file + rename).
 ---
 --- Example:
 ---     luaPodBridge.write_docker_compose(
@@ -1238,17 +1035,15 @@ end
 ---         {
 ---             services = {
 ---                 api = {
----                     ports = {
----                         "57241:3080",
----                     },
+---                     ports = { "57241:3080" },
 ---                 },
 ---             },
 ---         },
 ---         {
 ---             yaml_tags = {
 ---                 {
----                     pattern = "([ \t]*ports:)",
----                     tag = "!override",
+---                     path  = "services.api.ports",
+---                     tag   = "!override",
 ---                 },
 ---             },
 ---         }
@@ -1257,58 +1052,21 @@ end
 --- @param docker_compose_file string Path to the Docker Compose YAML file.
 --- @param docker_compose_tbl table Docker Compose configuration to serialize.
 --- @param opts table|nil Optional serialization and YAML tag options.
---- @param opts.yaml_tags table|nil List of YAML tag definitions to apply.
---- @param opts.yaml_tags[].pattern string Lua pattern matching the YAML key.
---- @param opts.yaml_tags[].tag string YAML tag to append to the matched key.
---- @param opts.yaml_tags[].count number|nil Maximum number of replacements;
----        defaults to 1. Use 0 to replace all matches.
+--- @param opts.yaml_tags table|nil List of YAML tag definitions (see yaml_apply_tags).
 --- @return boolean success True if the file was written successfully.
 --- @return string|nil err Error message if the operation failed.
 function luaPodBridge.write_docker_compose(docker_compose_file, docker_compose_tbl, opts)
     if type(docker_compose_file) ~= "string" or docker_compose_file == "" then
         return false, "write_docker_compose(): docker_compose_file must be a non-empty string"
     end
-
     if type(docker_compose_tbl) ~= "table" then
         return false, "write_docker_compose(): docker_compose_tbl must be a table"
     end
-
     if opts ~= nil and type(opts) ~= "table" then
         return false, "write_docker_compose(): opts must be a table or nil"
     end
 
-    opts = opts or {}
-
-    local yaml_content, err = lyaml.dump({
-        docker_compose_tbl,
-    })
-
-    if not yaml_content then
-        return false, "write_docker_compose(): Lyaml could not generate YAML: " .. tostring(err)
-    end
-
-    if opts.yaml_tags then
-        yaml_content, err = yaml_apply_tags(yaml_content, opts.yaml_tags)
-
-        if not yaml_content then
-            return false, "write_docker_compose(): " .. tostring(err)
-        end
-    end
-
-    local fh, open_err = io.open(docker_compose_file, "w")
-
-    if not fh then
-        return false, string.format("write_docker_compose(): failed to open %s for writing: %s", docker_compose_file, tostring(open_err))
-    end
-
-    local ok, write_err = fh:write(yaml_content)
-    fh:close()
-
-    if not ok then
-        return false, "write_docker_compose(): write failed: " .. tostring(write_err)
-    end
-
-    return true
+    return luaSysBridge.yaml_write_file(docker_compose_file, docker_compose_tbl, opts or {})
 end
 
 return luaPodBridge

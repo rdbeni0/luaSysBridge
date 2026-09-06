@@ -16,6 +16,7 @@
 --- The module also uses below dependencies:
 --- LUAPOSIX : https://luaposix.github.io/luaposix/index.html
 --- LuaFileSystem : https://lunarmodules.github.io/luafilesystem/manual.html
+--- lyaml : https://github.com/gvvaughan/lyaml , https://gvvaughan.github.io/lyaml
 
 local lfs = require("lfs")
 
@@ -148,11 +149,7 @@ function luaSysBridge.fork()
     local pid, errstr, errnum = unistd.fork()
 
     if pid == nil then
-        return nil,
-            string.format("fork failed: %s (errno %s)",
-                errstr or "unknown error",
-                tostring(errnum or "unknown")),
-            errnum
+        return nil, string.format("fork failed: %s (errno %s)", errstr or "unknown error", tostring(errnum or "unknown")), errnum
     end
 
     return pid
@@ -668,11 +665,7 @@ function luaSysBridge.setsid()
     local sid, errstr, errnum = unistd.setpid("s", 0)
 
     if sid == nil then
-        return nil,
-            string.format("setsid failed: %s (errno %s)",
-                errstr or "unknown error",
-                tostring(errnum or "unknown")),
-            errnum
+        return nil, string.format("setsid failed: %s (errno %s)", errstr or "unknown error", tostring(errnum or "unknown")), errnum
     end
 
     return sid
@@ -690,12 +683,11 @@ end
 --- @return string|nil err Error message on failure
 function luaSysBridge.stdio_to_devnull()
     local unistd = require("posix.unistd")
-    local fcntl  = require("posix.fcntl")
+    local fcntl = require("posix.fcntl")
 
     local fd, errstr, errnum = fcntl.open("/dev/null", fcntl.O_RDWR)
     if not fd then
-        return false, string.format("stdio_to_devnull: cannot open /dev/null: %s (errno %s)",
-            errstr or "unknown error", tostring(errnum or "unknown"))
+        return false, string.format("stdio_to_devnull: cannot open /dev/null: %s (errno %s)", errstr or "unknown error", tostring(errnum or "unknown"))
     end
 
     -- Best-effort: if any dup2 fails we still try the others, then report the first error
@@ -705,8 +697,7 @@ function luaSysBridge.stdio_to_devnull()
         local ok, e, n = unistd.dup2(fd, target_fd)
         if ok == nil then
             if not first_err then
-                first_err = string.format("stdio_to_devnull: dup2 %s failed: %s (errno %s)",
-                    name, e or "unknown error", tostring(n or "unknown"))
+                first_err = string.format("stdio_to_devnull: dup2 %s failed: %s (errno %s)", name, e or "unknown error", tostring(n or "unknown"))
             end
         end
     end
@@ -1722,6 +1713,69 @@ end
 --- @param ... any  table [, i [, j ]]
 --- @return ... Unpacked values
 luaSysBridge.table_unpack = table.unpack or unpack
+
+--- Check whether a table is a pure array (integer keys 1..n, no holes).
+---
+--- This is the contract used by table_deep_merge and the whole luaSysBridge:
+---   -> array  → sequential integer keys starting at 1 with no gaps
+---   -> map    → any other table (string keys, mixed, etc.)
+---
+--- @param t table
+--- @return boolean
+function luaSysBridge.table_is_array(t)
+    if type(t) ~= "table" then
+        return false
+    end
+
+    local n = 0
+    for k in pairs(t) do
+        if type(k) ~= "number" or k < 1 or k % 1 ~= 0 then
+            return false
+        end
+        if k > n then
+            n = k
+        end
+    end
+
+    -- No holes: every index from 1 to n must exist.
+    for i = 1, n do
+        if t[i] == nil then
+            return false
+        end
+    end
+
+    return n > 0 or next(t) == nil -- empty table is treated as array
+end
+
+--- Recursively merge source into destination.
+---
+--- Semantics (important for Docker Compose / configuration tables):
+---
+---   - When both destination[key] and source[key] are maps (non-array tables),
+---     they are merged recursively.
+---   - When source[key] is an array (or a scalar), the entire value in
+---     destination is replaced by the source value.
+---   - Existing keys in destination that are not present in source are preserved.
+---
+--- Consequently arrays are never concatenated; they are replaced as a whole.
+--- This matches the expected behaviour for Compose ports, volumes, environment, etc.
+---
+--- @param destination table Destination table (modified in place).
+--- @param source table Source table with higher priority.
+--- @return table destination The merged destination table.
+function luaSysBridge.table_deep_merge(destination, source)
+    for key, value in pairs(source) do
+        if type(value) == "table" and type(destination[key]) == "table" and not luaSysBridge.table_is_array(value) and not luaSysBridge.table_is_array(destination[key]) then
+            -- Both are maps -> recurse
+            luaSysBridge.table_deep_merge(destination[key], value)
+        else
+            -- Array or scalar -> replace entirely
+            destination[key] = value
+        end
+    end
+
+    return destination
+end
 
 --- Pretty-print a given lua table recursively to stdout.
 --- Prints keys and values; when a value is a table, recurses with increased indentation.
@@ -3057,7 +3111,7 @@ function luaSysBridge.fzf(options, opts)
         local script_body = preview_body:gsub("{}", "$1")
 
         preview_script_path = os.tmpname()
-        local sf, serr = io.open(preview_script_path, "w")
+        local sf, _ = io.open(preview_script_path, "w")
         if not sf then
             return "--preview=" .. shell_quote(preview_body)
         end
@@ -3273,5 +3327,324 @@ function luaSysBridge.fzf_select_and_run(prefix, dir, prompt, mode, opts)
     end
 end
 
+--- Atomically write a Lua table as YAML to a file.
+---
+--- Performs:
+---   1. lyaml.dump
+---   2. optional yaml_apply_tags
+---   3. write to a temporary file
+---   4. rename temporary → destination (atomic on the same filesystem)
+---
+--- @param yaml_file string Destination path.
+--- @param tbl table Lua table to serialize.
+--- @param opts table|nil Optional options.
+--- @param opts.yaml_tags table|nil Tag definitions (see yaml_apply_tags).
+--- @return boolean success
+--- @return string|nil err
+function luaSysBridge.yaml_write_file(yaml_file, tbl, opts)
+    local lyaml = require("lyaml")
+
+    if type(tbl) ~= "table" then
+        return nil, "yaml_write_file(): tbl must be a table or nil"
+    end
+
+    opts = opts or {}
+
+    local yaml_content, dump_err = lyaml.dump({ tbl })
+    if not yaml_content then
+        return false, "yaml_write_file(): Lyaml could not generate YAML: " .. tostring(dump_err)
+    end
+
+    if opts.yaml_tags then
+        local err
+        yaml_content, err = luaSysBridge.yaml_apply_tags(yaml_content, opts.yaml_tags)
+        if not yaml_content then
+            return false, "yaml_write_file(): " .. tostring(err)
+        end
+    end
+
+    -- Atomic write: temporary file next to the destination, then rename.
+    local tmp_file = yaml_file .. ".tmp." .. tostring(os.time()) .. "." .. tostring(math.random(100000, 999999))
+
+    local fh, open_err = io.open(tmp_file, "w")
+    if not fh then
+        return false, string.format("yaml_write_file(): failed to open temporary file %s for writing: %s", tmp_file, tostring(open_err))
+    end
+
+    local ok, write_err = fh:write(yaml_content)
+    fh:close()
+
+    if not ok then
+        os.remove(tmp_file)
+        return false, "yaml_write_file(): write failed: " .. tostring(write_err)
+    end
+
+    local rename_ok, rename_err = os.rename(tmp_file, yaml_file)
+    if not rename_ok then
+        os.remove(tmp_file)
+        return false, string.format("yaml_write_file(): failed to rename %s → %s: %s", tmp_file, yaml_file, tostring(rename_err))
+    end
+
+    return true
+end
+
+--- Apply YAML tags to generated YAML text using YAML paths.
+---
+--- Each tag definition is a table containing:
+---   path  string  YAML path to the key. Dot-separated components.
+---                 The '*' component matches any single path component.
+---   tag   string  YAML tag to apply to the matched key (e.g. "!override").
+---   count number|nil  Maximum number of matches.
+---                     nil or 1 → replace the first match only
+---                     0        → replace ALL matches (unlimited)
+---                     n > 0    → replace at most n matches
+---
+--- count must be a non-negative integer (or nil).
+---
+--- Examples:
+---     {
+---         {
+---             path = "services.api.ports",
+---             tag  = "!override",
+---         },
+---     }
+---
+--- turns:
+---     services:
+---       api:
+---         ports:
+---         - 57241:3080
+---
+--- into:
+---     services:
+---       api:
+---         ports: !override
+---         - 57241:3080
+---
+--- Inline values are also supported:
+---     volumes: []  →  volumes: !override []
+---
+--- A wildcard can be used to match any single path component:
+---     path = "services.*.ports", count = 0
+---
+--- @param yaml_content string Generated YAML content
+--- @param yaml_tags table|nil Array of YAML tag definitions
+--- @return string|nil content Modified YAML content
+--- @return string|nil err Error message
+function luaSysBridge.yaml_apply_tags(yaml_content, yaml_tags)
+    if yaml_tags == nil then
+        return yaml_content
+    end
+
+    if type(yaml_tags) ~= "table" then
+        return nil, "yaml_apply_tags(): yaml_tags must be a table or nil"
+    end
+
+    local function split_path(path)
+        local result = {}
+        for component in path:gmatch("[^%.]+") do
+            result[#result + 1] = component
+        end
+        return result
+    end
+
+    local function path_matches(path, pattern)
+        if #path ~= #pattern then
+            return false
+        end
+        for index, component in ipairs(pattern) do
+            if component ~= "*" and component ~= path[index] then
+                return false
+            end
+        end
+        return true
+    end
+
+    local lines = {}
+    for line in yaml_content:gmatch("([^\n]*)\n?") do
+        if line ~= "" or #lines > 0 then
+            lines[#lines + 1] = line
+        end
+    end
+
+    for index, definition in ipairs(yaml_tags) do
+        if type(definition) ~= "table" then
+            return nil, string.format("yaml_apply_tags(): tag definition #%d must be a table", index)
+        end
+
+        local path = definition.path
+        local tag = definition.tag
+        local count = definition.count
+
+        if type(path) ~= "string" or path == "" then
+            return nil, string.format("yaml_apply_tags(): tag definition #%d has invalid path", index)
+        end
+
+        if type(tag) ~= "string" or tag == "" then
+            return nil, string.format("yaml_apply_tags(): tag definition #%d has invalid tag", index)
+        end
+
+        if
+            count ~= nil
+            and (
+                type(count) ~= "number"
+                or count < 0
+                or count % 1 ~= 0
+                or count ~= count -- NaN
+            )
+        then
+            return nil, string.format("yaml_apply_tags(): tag definition #%d count must be a non-negative integer or nil", index)
+        end
+
+        local path_pattern = split_path(path)
+        local replacement_limit = count or 1 -- nil → 1
+        local replacement_count = 0
+
+        local stack = {}
+
+        for line_index, line in ipairs(lines) do
+            -- Ignore empty lines and YAML document markers.
+            if line ~= "" and line ~= "---" and line ~= "..." then
+                local indentation = line:match("^(%s*)")
+                local indent_length = #indentation
+
+                local key = line:match("^%s*([^%s:#][^:]*):")
+
+                if key then
+                    key = key:gsub("%s+$", "")
+
+                    -- Pop stack entries at current or deeper level.
+                    while #stack > 0 and stack[#stack].indent >= indent_length do
+                        stack[#stack] = nil
+                    end
+
+                    stack[#stack + 1] = {
+                        indent = indent_length,
+                        key = key,
+                    }
+
+                    local current_path = {}
+                    for stack_index, entry in ipairs(stack) do
+                        current_path[stack_index] = entry.key
+                    end
+
+                    if path_matches(current_path, path_pattern) then
+                        if replacement_limit == 0 or replacement_count < replacement_limit then
+                            -- Do not apply the same tag twice.
+                            local already_tagged = line:match(":%s*" .. tag:gsub("([^%w])", "%%%1"))
+
+                            if not already_tagged then
+                                local key_end = line:find(":", 1, true)
+                                local prefix = line:sub(1, key_end)
+                                local value = line:sub(key_end + 1)
+
+                                local leading_whitespace = line:match("^(%s*)") or ""
+                                local value_without_leading = value:match("^%s*(.*)$") or ""
+
+                                if value_without_leading ~= "" then
+                                    -- Inline value:  volumes: []  →  volumes: !override []
+                                    lines[line_index] = prefix .. " " .. tag .. " " .. value_without_leading
+                                else
+                                    -- Block value:  volumes:  →  volumes: !override
+                                    lines[line_index] = leading_whitespace .. key .. ": " .. tag
+                                end
+
+                                replacement_count = replacement_count + 1
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        if replacement_count == 0 then
+            return nil, string.format("yaml_apply_tags(): path did not match YAML: %s", path)
+        end
+    end
+
+    return table.concat(lines, "\n")
+end
+
+--- Load a YAML file into a Lua table.
+---
+--- @param yaml_file string Path to the YAML file.
+--- @return table|nil yaml_tbl Loaded YAML configuration.
+--- @return string|nil err Error message if loading failed.
+function luaSysBridge.yaml_read_file(yaml_file)
+    local lyaml = require("lyaml")
+
+    if type(yaml_file) ~= "string" or yaml_file == "" then
+        return nil, "yaml_read_file(): yaml_file must be a non-empty string"
+    end
+
+    local fh, open_err = io.open(yaml_file, "r")
+    if not fh then
+        return nil, string.format("yaml_read_file(): failed to open %s for reading: %s", yaml_file, tostring(open_err))
+    end
+
+    local content = fh:read("*a")
+    fh:close()
+
+    if not content then
+        return nil, string.format("yaml_read_file(): failed to read %s", yaml_file)
+    end
+
+    local yaml_tbl, err = lyaml.load(content)
+    if not yaml_tbl then
+        return nil, string.format("yaml_read_file(): failed to parse %s: %s", yaml_file, tostring(err))
+    end
+
+    if type(yaml_tbl) ~= "table" then
+        return nil, string.format("yaml_read_file(): YAML root must be a table: %s", yaml_file)
+    end
+
+    return yaml_tbl
+end
+
+--- Merge custom configuration into an existing YAML configuration
+--- and write the result to a new YAML file.
+---
+--- Values from custom_tbl have priority over values loaded from the
+--- source YAML file.
+---
+--- Comments from the source YAML file are not preserved.
+---
+--- Optional YAML tags can be applied after serialization.
+---
+--- @param source_yaml_file string Existing YAML configuration.
+--- @param destination_yaml_file string Output YAML configuration.
+--- @param custom_tbl table Custom configuration with higher priority.
+--- @param opts table|nil Optional merge options.
+--- @param opts.yaml_tags table|nil List of YAML tag definitions to apply.
+--- @return boolean success True if the file was written successfully.
+--- @return string|nil err Error message if the operation failed.
+function luaSysBridge.yaml_merge_file(source_yaml_file, destination_yaml_file, custom_tbl, opts)
+    if type(source_yaml_file) ~= "string" or source_yaml_file == "" then
+        return false, "yaml_merge_file(): source_yaml_file must be a non-empty string"
+    end
+
+    if type(destination_yaml_file) ~= "string" or destination_yaml_file == "" then
+        return false, "yaml_merge_file(): destination_yaml_file must be a non-empty string"
+    end
+
+    if type(custom_tbl) ~= "table" then
+        return false, "yaml_merge_file(): custom_tbl must be a table"
+    end
+
+    if opts ~= nil and type(opts) ~= "table" then
+        return false, "yaml_merge_file(): opts must be a table or nil"
+    end
+
+    opts = opts or {}
+
+    local yaml_tbl, err = luaSysBridge.yaml_read_file(source_yaml_file)
+    if not yaml_tbl then
+        return false, err
+    end
+
+    luaSysBridge.table_deep_merge(yaml_tbl, custom_tbl)
+
+    return luaSysBridge.yaml_write_file(destination_yaml_file, yaml_tbl, opts)
+end
 
 return luaSysBridge
