@@ -120,6 +120,99 @@ function luaSysBridge.execvp(file, args)
     return nil, string.format("execvp failed for %q: %s (errno %d)", file, errmsg, errnum), errnum
 end
 
+--- Suspend execution for a given number of seconds (POSIX).
+--- Compatible with Lua 5.1–5.4 and LuaJIT.
+---
+--- Uses LUAPOSIX:
+---   - posix.unistd.sleep for whole seconds
+---   - posix.time.nanosleep for fractional seconds (when available)
+---
+--- Accepts integer or fractional seconds (e.g. 1, 0.5, 2.25).
+--- On signal interruption, retries the remaining time (best-effort).
+---
+--- @param seconds number  Seconds to sleep (must be >= 0)
+--- @return boolean true on success
+--- @return string|nil err Error message on failure
+function luaSysBridge.sleep(seconds)
+    if type(seconds) ~= "number" then
+        return false, "sleep(): seconds must be a number"
+    end
+    if seconds < 0 then
+        return false, "sleep(): seconds must be >= 0"
+    end
+    if seconds == 0 then
+        return true
+    end
+
+    local unistd = require("posix.unistd")
+
+    -- Prefer nanosleep for sub-second precision when posix.time is available
+    local time_ok, time = pcall(require, "posix.time")
+    if time_ok and time and time.nanosleep then
+        local whole = math.floor(seconds)
+        local frac = seconds - whole
+        local req = {
+            tv_sec = whole,
+            tv_nsec = math.floor(frac * 1e9 + 0.5), -- round to nearest ns
+        }
+        -- Normalize in case of floating-point edge cases
+        if req.tv_nsec >= 1000000000 then
+            req.tv_sec = req.tv_sec + 1
+            req.tv_nsec = req.tv_nsec - 1000000000
+        end
+
+        -- Retry on EINTR with remaining time
+        while true do
+            local rem, errstr, errnum = time.nanosleep(req)
+            -- luaposix nanosleep: on full success typically returns nil/0 style
+            -- or remaining timespec on interrupt; normalize both styles.
+            if rem == 0 or rem == nil or (type(rem) == "table" and (rem.tv_sec or 0) == 0 and (rem.tv_nsec or 0) == 0) then
+                -- completed (or no remaining time reported)
+                if errstr and errnum and errnum ~= 0 then
+                    -- unexpected error
+                    return false, string.format("nanosleep failed: %s (errno %s)", tostring(errstr), tostring(errnum))
+                end
+                return true
+            end
+
+            if type(rem) == "table" and (rem.tv_sec or rem.tv_nsec) then
+                -- interrupted: sleep the remainder
+                req = {
+                    tv_sec = rem.tv_sec or 0,
+                    tv_nsec = rem.tv_nsec or 0,
+                }
+            else
+                -- unknown return; treat as done if no hard error
+                if errstr and errnum and errnum ~= 0 then
+                    return false, string.format("nanosleep failed: %s (errno %s)", tostring(errstr), tostring(errnum))
+                end
+                return true
+            end
+        end
+    end
+
+    -- Fallback: whole-second sleep via unistd.sleep (POSIX sleep(3))
+    -- sleep() returns the remaining seconds if interrupted by a signal.
+    local left = math.floor(seconds + 0.5) -- round to nearest second
+    if left < 1 and seconds > 0 then
+        left = 1 -- at least 1s if fractional requested but no nanosleep
+    end
+
+    while left > 0 do
+        local ret = unistd.sleep(left)
+        -- luaposix sleep returns remaining seconds (0 = completed)
+        if type(ret) ~= "number" then
+            return false, "sleep() failed"
+        end
+        if ret == 0 then
+            return true
+        end
+        left = ret -- interrupted, continue with remainder
+    end
+
+    return true
+end
+
 --- Create a new process by duplicating the current one (POSIX fork).
 --- Compatible with Lua 5.1–5.4 and LuaJIT.
 --- Uses LUAPOSIX posix.unistd.fork.
