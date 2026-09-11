@@ -369,10 +369,25 @@ end
 --- `total` may be greater than `count`.
 ---
 --- Optional filters:
----   name    string  Lua pattern matched against every container name
+---   name    string  Plain substring matched against every container name
 ---   image   string  Lua pattern matched against Image
 ---   id      string  Lua pattern matched against Id
 ---   status  string  Exact match against State
+---
+--- The `image` and `id` filters use Lua pattern matching.
+--- Lua pattern syntax therefore applies to these filters. Literal
+--- special characters must be escaped according to Lua pattern rules.
+---
+--- Example:
+---   image = "open%-webui"
+---
+--- The `name` filter does not use Lua pattern matching.
+--- Special characters are treated literally.
+---
+--- Example:
+---   name = "open-webui"
+---
+--- This matches a container named `open-webui`.
 ---
 --- @param opts table|string|nil
 --- @return table|nil result
@@ -419,13 +434,7 @@ function luaPodBridge.ps(opts)
         return true
     end
 
-    local ok, pattern_err = validate_pattern("name", opts.name)
-
-    if not ok then
-        return nil, pattern_err
-    end
-
-    ok, pattern_err = validate_pattern("image", opts.image)
+    local ok, pattern_err = validate_pattern("image", opts.image)
 
     if not ok then
         return nil, pattern_err
@@ -445,20 +454,20 @@ function luaPodBridge.ps(opts)
 
     local containers = {}
 
-    local function container_name_matches(container, pattern)
-        if not pattern then
+    local function container_name_matches(container, name)
+        if not name then
             return true
         end
 
         local names = container.Names
 
         if type(names) == "string" then
-            return names:find(pattern, 1, true) ~= nil
+            return names:find(name, 1, true) ~= nil
         end
 
         if type(names) == "table" then
-            for _, name in ipairs(names) do
-                if type(name) == "string" and name:find(pattern, 1, true) then
+            for _, container_name in ipairs(names) do
+                if type(container_name) == "string" and container_name:find(name, 1, true) then
                     return true
                 end
             end
@@ -609,7 +618,7 @@ function luaPodBridge.ps_get(name_or_id, opts)
 end
 
 -------------------------------------------------------------------------------
--- Image helpers (podman / docker images --format json)
+-- Image helpers (p)odman / docker images --format json)
 -------------------------------------------------------------------------------
 
 -- Known public registry prefixes (via string prefix match).
