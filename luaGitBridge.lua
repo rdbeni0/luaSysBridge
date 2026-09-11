@@ -6,10 +6,8 @@
 -- 631 = warning "line is too long (XXX > 120)
 -- luacheck: ignore 631
 
---- GitHub release helpers for Lua scripts.
---- Same conventions as luaSysBridge (EmmyLua annotations, Lua 5.1–5.4 + LuaJIT).
----
---- HTTP is provided by luaSysBridge (http_get / http_download).
+--- git and gitHub release helpers for Lua scripts.
+--- Same conventions as luaSysBridge
 ---
 --- Dependencies:
 ---   luaSysBridge (with cURL support for HTTP)
