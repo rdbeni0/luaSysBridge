@@ -3740,4 +3740,105 @@ function luaSysBridge.yaml_merge_file(source_yaml_file, destination_yaml_file, c
     return luaSysBridge.yaml_write_file(destination_yaml_file, yaml_tbl, opts)
 end
 
+--- Dependencies (optional, loaded on demand):
+---   cURL (Lua-cURLv3) for http_get / http_download
+
+--- Perform an HTTP GET and return the response body as a string.
+--- Uses Lua-cURLv3. Compatible with Lua 5.1–5.4 and LuaJIT.
+---
+--- @param url string  Full URL to fetch
+--- @param opts table|nil  Optional:
+---   useragent string   (default: "luaSysBridge/1.0")
+---   timeout   number   seconds (default: 30)
+---   headers   table    extra headers { name = value, ... }
+--- @return string|nil body
+--- @return string|nil err
+function luaSysBridge.http_get(url, opts)
+    if type(url) ~= "string" or url == "" then
+        return nil, "http_get(): url must be a non-empty string"
+    end
+    opts = opts or {}
+
+    local cURL = require("cURL")
+    local body = {}
+    local easy_opts = {
+        url = url,
+        followlocation = true,
+        useragent = opts.useragent or "luaSysBridge/1.0",
+        writefunction = function(chunk)
+            table.insert(body, chunk)
+            return #chunk
+        end,
+        timeout = opts.timeout or 30,
+    }
+
+    if type(opts.headers) == "table" then
+        local hdrs = {}
+        for k, v in pairs(opts.headers) do
+            table.insert(hdrs, tostring(k) .. ": " .. tostring(v))
+        end
+        easy_opts.httpheader = hdrs
+    end
+
+    local easy = cURL.easy(easy_opts)
+    local ok, err = pcall(function()
+        easy:perform()
+    end)
+    easy:close()
+
+    if not ok then
+        return nil, "cURL GET failed: " .. tostring(err)
+    end
+    return table.concat(body)
+end
+
+--- Download a URL to a local file (binary-safe).
+--- Uses Lua-cURLv3. Compatible with Lua 5.1–5.4 and LuaJIT.
+---
+--- @param url string
+--- @param dest_path string
+--- @param opts table|nil  Optional:
+---   useragent string
+---   timeout   number   (default: 300)
+--- @return boolean|nil ok
+--- @return string|nil err
+function luaSysBridge.http_download(url, dest_path, opts)
+    if type(url) ~= "string" or url == "" then
+        return nil, "http_download(): url must be a non-empty string"
+    end
+    if type(dest_path) ~= "string" or dest_path == "" then
+        return nil, "http_download(): dest_path must be a non-empty string"
+    end
+    opts = opts or {}
+
+    local f, err = io.open(dest_path, "wb")
+    if not f then
+        return nil, "cannot open " .. dest_path .. ": " .. tostring(err)
+    end
+
+    local cURL = require("cURL")
+    local easy = cURL.easy({
+        url = url,
+        followlocation = true,
+        useragent = opts.useragent or "luaSysBridge/1.0",
+        writefunction = function(chunk)
+            f:write(chunk)
+            return #chunk
+        end,
+        timeout = opts.timeout or 300,
+    })
+
+    local ok, err2 = pcall(function()
+        easy:perform()
+    end)
+    easy:close()
+    f:close()
+
+    if not ok then
+        os.remove(dest_path)
+        return nil, "download failed: " .. tostring(err2)
+    end
+    return true
+end
+
 return luaSysBridge
