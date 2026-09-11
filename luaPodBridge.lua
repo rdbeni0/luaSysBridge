@@ -450,13 +450,17 @@ function luaPodBridge.ps(opts)
             return true
         end
 
-        if type(container.Names) ~= "table" then
-            return false
+        local names = container.Names
+
+        if type(names) == "string" then
+            return names:find(pattern, 1, true) ~= nil
         end
 
-        for _, name in ipairs(container.Names) do
-            if type(name) == "string" and name:match(pattern) then
-                return true
+        if type(names) == "table" then
+            for _, name in ipairs(names) do
+                if type(name) == "string" and name:find(pattern, 1, true) then
+                    return true
+                end
             end
         end
 
