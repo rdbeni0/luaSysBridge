@@ -17,6 +17,7 @@
 --- LUAPOSIX : https://luaposix.github.io/luaposix/index.html
 --- LuaFileSystem : https://lunarmodules.github.io/luafilesystem/manual.html
 --- lyaml : https://github.com/gvvaughan/lyaml , https://gvvaughan.github.io/lyaml
+--- lua-curl : https://github.com/Lua-cURL , https://github.com/Lua-cURL/Lua-cURLv3
 
 local lfs = require("lfs")
 
