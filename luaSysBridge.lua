@@ -2255,42 +2255,62 @@ end
 --- preserving their semantics, and wrapping the pattern with `.*` for partial matches.
 ---
 --- Example:
----     local files = luaSysBridge.find("/var/log", "*.log")       -- only files
----     local both  = luaSysBridge.find("/var", "*", true)         -- files + dirs
----     local dirs  = luaSysBridge.find("/var", "*log*", "dirs")   -- only dirs
+---     local files = luaSysBridge.find("/var/log", "*.log")                 -- only files (non-recursive)
+---     local both  = luaSysBridge.find("/var", "*", true)                   -- files + dirs (non-recursive)
+---     local dirs  = luaSysBridge.find("/var", "*log*", "dirs")             -- only dirs (non-recursive)
+---     local all   = luaSysBridge.find("/var", "SKILL.md", nil, true)       -- recursive, only files
+---     local rec   = luaSysBridge.find("/var", "*", true, true)             -- recursive, files + dirs
+---     local rdirs = luaSysBridge.find("/var", "*log*", "dirs", true)       -- recursive, only dirs
 ---
 --- @param dir string Directory path where the search will be performed.
 --- @param pattern_base string Glob-like pattern to match against file or directory names.
 --- @param mode any Optional. If nil: only files. If truthy: files + dirs. If string "dirs" (or non-nil non-true): only dirs.
---- @return table Array (integer-keyed) of file or directory names that match the converted pattern.
-function luaSysBridge.find(dir, pattern_base, mode)
+--- @param recursive boolean|nil Optional. If true, search recursively into subdirectories. Default: false.
+--- @return table Array (integer-keyed) of relative paths (from `dir`) that match the converted pattern.
+function luaSysBridge.find(dir, pattern_base, mode, recursive)
     local results = {}
     pattern_base = pattern_base or "*"
+    recursive = recursive == true
 
     -- Escape Lua magic characters except * and ?
     local lua_pattern = pattern_base:gsub("([%.%+%-%%%[%]%^%$%(%)])", "%%%1"):gsub("%*", ".*"):gsub("%?", ".")
-
     lua_pattern = ".*" .. lua_pattern .. ".*"
 
     local include_files = (mode == nil) or (mode == true)
     local include_dirs = (mode and mode ~= true)
 
-    for entry in lfs.dir(dir) do
-        if entry ~= "." and entry ~= ".." then
-            local full_path = dir .. "/" .. entry
-            local attr = lfs.attributes(full_path)
-            if attr then
-                local is_file = (attr.mode == "file")
-                local is_dir = (attr.mode == "directory")
+    -- Normalize trailing slash
+    if dir:sub(-1) == "/" then
+        dir = dir:sub(1, -2)
+    end
 
-                if entry:match(lua_pattern) then
-                    if (is_file and include_files) or (is_dir and include_dirs) then
-                        table.insert(results, entry)
+    local function search(current_dir, relative_prefix)
+        for entry in lfs.dir(current_dir) do
+            if entry ~= "." and entry ~= ".." then
+                local full_path = current_dir .. "/" .. entry
+                local rel_path = relative_prefix == "" and entry or (relative_prefix .. "/" .. entry)
+                local attr = lfs.attributes(full_path)
+
+                if attr then
+                    local is_file = (attr.mode == "file")
+                    local is_dir = (attr.mode == "directory")
+
+                    if entry:match(lua_pattern) then
+                        if (is_file and include_files) or (is_dir and include_dirs) then
+                            table.insert(results, rel_path)
+                        end
+                    end
+
+                    -- Recurse into directories when requested
+                    if recursive and is_dir then
+                        search(full_path, rel_path)
                     end
                 end
             end
         end
     end
+
+    search(dir, "")
     return results
 end
 
