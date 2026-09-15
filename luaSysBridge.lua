@@ -3767,4 +3767,88 @@ function luaSysBridge.http_download(url, dest_path, opts)
     return true
 end
 
+--- Reads and parses a PID from a PID file.
+--- Automatically trims whitespace/newlines and validates the number.
+--- @param path string Path to the PID file
+--- @return integer|nil pid The PID if successfully read and valid, or nil on failure
+--- @return string|nil err Error message if reading failed or file didn't exist/was invalid
+function luaSysBridge.pid_file_read(path)
+    if not luaSysBridge.exists_file(path) then
+        return nil, "PID file does not exist: " .. tostring(path)
+    end
+
+    local content, err = luaSysBridge.cat(path, { trim = true })
+    if not content then
+        return nil, err or ("cannot read PID file: " .. tostring(path))
+    end
+
+    local pid = tonumber(content)
+    if not pid or pid < 1 then
+        return nil, "invalid PID in " .. tostring(path) .. ": " .. tostring(content)
+    end
+
+    return pid
+end
+
+--- Writes a PID to a PID file (with a trailing newline).
+--- @param path string Path to the PID file
+--- @param pid number Process ID to write
+--- @return boolean success true on success
+--- @return string|nil err Error message on failure
+function luaSysBridge.pid_file_write(path, pid)
+    if type(pid) ~= "number" or pid < 1 then
+        return false, "invalid PID value: " .. tostring(pid)
+    end
+
+    local file, err = io.open(path, "w")
+    if not file then
+        return false, err or ("cannot open PID file for writing: " .. tostring(path))
+    end
+
+    local written, write_err = file:write(tostring(pid) .. "\n")
+    file:close()
+
+    if not written then
+        return false, write_err or "failed to write PID"
+    end
+
+    return true
+end
+
+--- Checks if a daemon tracked by a PID file is currently running.
+--- Validates if the PID file exists, reads the PID, and checks if the process is alive.
+--- If the PID file exists but the process is dead (stale PID file), optionally removes it.
+--- @param path string Path to the PID file
+--- @param remove_stale boolean|nil If true, automatically removes the PID file when the process is dead. Default: false.
+--- @return boolean running true if the process is alive
+--- @return integer|nil pid The PID if running, or the stale PID if dead, or nil if no PID file
+function luaSysBridge.pid_file_is_running(path, remove_stale)
+    local pid, _ = luaSysBridge.pid_file_read(path)
+    if not pid then
+        return false, nil
+    end
+
+    if luaSysBridge.pid_process_exists(pid) then
+        return true, pid
+    end
+
+    if remove_stale then
+        luaSysBridge.remove(path)
+    end
+
+    return false, pid
+end
+
+--- Checks whether a given process ID (PID) is currently active / alive.
+--- Uses luaSysBridge.kill(pid, 0) to check process existence without sending a real signal.
+--- @param pid number Process ID
+--- @return boolean true if the process exists and is running, false otherwise
+function luaSysBridge.pid_process_exists(pid)
+    if type(pid) ~= "number" or pid < 1 then
+        return false
+    end
+    local ok, _ = luaSysBridge.kill(pid, 0)
+    return ok == true
+end
+
 return luaSysBridge
