@@ -766,39 +766,59 @@ function luaSysBridge.setsid()
 end
 
 --- Redirect stdin, stdout and stderr to /dev/null.
---- Compatible with Lua 5.1–5.4 and LuaJIT.
---- Uses LUAPOSIX (posix.fcntl.open + posix.unistd.dup2 / close).
 ---
---- Typical use: call in a forked child *after* setsid() and *before*
---- execvp, so the process is fully detached from the controlling terminal
---- and does not print anything to the original TTY.
+--- By default all three descriptors are redirected.
 ---
+--- Examples:
+---   luaSysBridge.stdio_to_devnull()
+---   luaSysBridge.stdio_to_devnull({stdin = true})
+---   luaSysBridge.stdio_to_devnull({stdin = true, stdout = false, stderr = false})
+---
+--- @param options table|nil
 --- @return boolean true on success
 --- @return string|nil err Error message on failure
-function luaSysBridge.stdio_to_devnull()
+function luaSysBridge.stdio_to_devnull(options)
     local unistd = require("posix.unistd")
     local fcntl = require("posix.fcntl")
+
+    options = options or {}
+
+    -- Default: redirect everything.
+    local redirect_stdin = options.stdin ~= false
+    local redirect_stdout = options.stdout ~= false
+    local redirect_stderr = options.stderr ~= false
+
+    -- Nothing to do.
+    if not redirect_stdin and not redirect_stdout and not redirect_stderr then
+        return true
+    end
 
     local fd, errstr, errnum = fcntl.open("/dev/null", fcntl.O_RDWR)
     if not fd then
         return false, string.format("stdio_to_devnull: cannot open /dev/null: %s (errno %s)", errstr or "unknown error", tostring(errnum or "unknown"))
     end
 
-    -- Best-effort: if any dup2 fails we still try the others, then report the first error
     local first_err = nil
 
     local function do_dup2(target_fd, name)
         local ok, e, n = unistd.dup2(fd, target_fd)
-        if ok == nil then
-            if not first_err then
-                first_err = string.format("stdio_to_devnull: dup2 %s failed: %s (errno %s)", name, e or "unknown error", tostring(n or "unknown"))
-            end
+
+        if ok == nil and not first_err then
+            first_err = string.format("stdio_to_devnull: dup2 %s failed: %s (errno %s)", name, e or "unknown error", tostring(n or "unknown"))
         end
     end
 
-    do_dup2(0, "stdin")
-    do_dup2(1, "stdout")
-    do_dup2(2, "stderr")
+    if redirect_stdin then
+        do_dup2(0, "stdin")
+    end
+
+    if redirect_stdout then
+        do_dup2(1, "stdout")
+    end
+
+    if redirect_stderr then
+        do_dup2(2, "stderr")
+    end
 
     if fd > 2 then
         unistd.close(fd)
@@ -807,6 +827,7 @@ function luaSysBridge.stdio_to_devnull()
     if first_err then
         return false, first_err
     end
+
     return true
 end
 
