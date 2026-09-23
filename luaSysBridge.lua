@@ -254,38 +254,55 @@ end
 --- @return boolean success true when directory exists or was created successfully, false otherwise
 --- @return string|nil err Error message when creation failed, nil on success
 function luaSysBridge.mkdir(path)
-    -- Normalize path (remove trailing '/')
-    if path:sub(-1) == "/" then
-        path = path:sub(1, -2)
+    -- Backward compatible validation
+    if type(path) ~= "string" then
+        return false, "path must be a string, got " .. tostring(path)
     end
 
-    -- If the directory already exists, return success
+    if path == "" then
+        return false, "path is empty"
+    end
+
+    -- Normalize path
+    path = path:gsub("/+$", "")
+
+    -- Root directory
+    if path == "" then
+        return true
+    end
+
+    -- Already exists?
     local attr = lfs.attributes(path)
     if attr and attr.mode == "directory" then
         return true
     end
 
-    -- Find parent directory
-    local parent = path:match("^(.*)/[^/]*$")
-    if parent and parent ~= "" then
+    -- Determine parent directory
+    local parent = path:match("^(.*)/[^/]+$")
+
+    -- Create parent first
+    if parent and parent ~= "" and parent ~= path then
         local ok, err = luaSysBridge.mkdir(parent)
         if not ok then
             return false, err
         end
     end
 
-    -- Attempt to create the current directory
+    -- Create current directory
     local ok, err = lfs.mkdir(path)
-    if not ok then
-        -- If another process created it in the meantime, that’s fine
-        attr = lfs.attributes(path)
-        if attr and attr.mode == "directory" then
-            return true
-        end
-        return false, err
+
+    if ok then
+        return true
     end
 
-    return true
+    -- Handle race condition:
+    -- another process may have created the directory meanwhile
+    attr = lfs.attributes(path)
+    if attr and attr.mode == "directory" then
+        return true
+    end
+
+    return false, err
 end
 
 --- Remove a directory and its contents. Uses LUAPOSIX. Equivalent to "rm -rf".
