@@ -51,25 +51,62 @@ function luaSysBridge.execute(cmd)
     end
 end
 
---- Execute a program, replacing the current process (python os.execvp equivalent).
---- Uses LUAPOSIX posix.unistd.execp which performs PATH search when `file` contains no slash.
---- On success this function never returns (the current Lua process is replaced).
---- On failure it returns nil plus an error message (and optionally errnum).
+--- Execute a program, optionally in the background.
+---
+--- Foreground:
+---   Replaces the current process, like execvp().
+---
+--- Background:
+---   Forks a child process. The child replaces itself with the requested
+---   program, while the parent returns immediately with the child's PID.
+---   This is similar to:
+---
+---       emacs &
+---
+---   Note: background mode does NOT detach stdin/stdout/stderr. The child
+---   inherits the parent's file descriptors, just like a normal shell
+---   background process unless the shell redirects them.
+---
+--- Uses LUAPOSIX posix.unistd.execp which performs PATH search when `file`
+--- contains no slash.
+---
+--- On foreground success this function never returns.
+--- On foreground failure it returns nil plus an error message and errno.
+---
+--- On background success it returns the child PID.
+--- On fork failure it returns nil plus an error message and errno.
+--- If exec fails in the child, the child exits with status 127.
+---
 --- Compatible with Lua 5.1–5.4 and LuaJIT.
 ---
---- Two calling styles are supported:
+--- Calling styles:
 ---
 --- 1. Friendly (recommended):
----      luaSysBridge.execvp("podman", { "run", "--rm", "-it", "image" })
+---      luaSysBridge.execvp("podman", {
+---          "run", "--rm", "-it", "image"
+---      })
 ---
---- 2. Classic / explicit argv[0] (still works):
----      luaSysBridge.execvp("podman", { [0] = "podman", "run", "--rm", "-it", "image" })
----      luaSysBridge.execvp("podman", { "podman", "run", "--rm", "-it", "image" })
+--- 2. Classic / explicit argv[0]:
+---      luaSysBridge.execvp("podman", {
+---          [0] = "podman",
+---          "run", "--rm", "-it", "image"
+---      })
+---
+--- 3. Classic array style:
+---      luaSysBridge.execvp("podman", {
+---          "podman", "run", "--rm", "-it", "image"
+---      })
+---
+--- 4. Background:
+---      local pid, err = luaSysBridge.execvp("emacs", {}, true)
 ---
 --- @param file string Program name or path. If it contains no '/', PATH is searched.
 --- @param args table Argument vector. May start from the first real argument or contain key 0.
---- @return nil, string, integer Never returns on success; on failure: nil, errmsg, errnum
-function luaSysBridge.execvp(file, args)
+--- @param background boolean|nil If true, fork and execute in the child.
+--- @return integer|nil, string|nil, integer|nil
+---         Foreground: never returns on success; on failure: nil, errmsg, errnum
+---         Background: pid, nil, nil on success; nil, errmsg, errnum on fork failure
+function luaSysBridge.execvp(file, args, background)
     if type(file) ~= "string" or file == "" then
         return nil, "execvp(): file must be a non-empty string"
     end
@@ -78,47 +115,106 @@ function luaSysBridge.execvp(file, args)
         return nil, "execvp(): args must be a table (argument vector)"
     end
 
+    if background == nil then
+        background = false
+    elseif type(background) ~= "boolean" then
+        return nil, "execvp(): background must be a boolean"
+    end
+
     for _, v in pairs(args) do
         if type(v) ~= "string" then
             return nil, "execvp(): all args must be strings"
         end
     end
 
-    -- Normalize to a proper argv table that always has index 0
+    -- Normalize to a proper argv table that always has index 0.
     local argv = {}
 
     if args[0] ~= nil then
-        -- User already provided explicit argv[0]
+        -- User already provided explicit argv[0].
         for k, v in pairs(args) do
             argv[k] = v
         end
     elseif args[1] == file then
-        -- Classic style: first element is the program name
+        -- Classic style:
+        --   { "podman", "run", "--rm" }
         argv[0] = file
+
         for i = 2, #args do
             argv[i - 1] = args[i]
         end
     else
-        -- Friendly style (recommended): args are only the real arguments
+        -- Friendly style:
+        --   { "run", "--rm" }
         argv[0] = file
+
         for i, v in ipairs(args) do
             argv[i] = v
         end
     end
 
-    -- Guarantee at least argv[0]
+    -- Guarantee at least argv[0].
     if next(argv) == nil then
         argv[0] = file
     end
 
     local unistd = require("posix.unistd")
 
-    -- Performs PATH search like C execvp().
-    -- Never returns on success; on failure returns nil, errmsg, errnum.
+    ---------------------------------------------------------------------------
+    -- Foreground mode
+    ---------------------------------------------------------------------------
+
+    if not background then
+        -- Performs PATH search like C execvp().
+        --
+        -- Never returns on success.
+        -- On failure returns nil, errmsg, errnum.
+        local _, errstr, errnum = unistd.execp(file, argv)
+
+        local errmsg = errstr or "unknown error"
+
+        return nil, string.format("execvp failed for %q: %s (errno %d)", file, errmsg, errnum), errnum
+    end
+
+    ---------------------------------------------------------------------------
+    -- Background mode
+    ---------------------------------------------------------------------------
+
+    local pid, fork_errstr, fork_errnum = unistd.fork()
+
+    if pid == nil then
+        local errmsg = fork_errstr or "unknown error"
+
+        return nil, string.format("execvp(): fork failed: %s (errno %d)", errmsg, fork_errnum), fork_errnum
+    end
+
+    ---------------------------------------------------------------------------
+    -- Parent
+    ---------------------------------------------------------------------------
+
+    if pid > 0 then
+        -- Parent continues running and returns the child's PID.
+        return pid
+    end
+
+    ---------------------------------------------------------------------------
+    -- Child
+    ---------------------------------------------------------------------------
+
+    -- pid == 0 means we are in the child.
+    --
+    -- execp() replaces this process. If it succeeds, this code never
+    -- returns. If it fails, terminate only the child process.
     local _, errstr, errnum = unistd.execp(file, argv)
 
     local errmsg = errstr or "unknown error"
-    return nil, string.format("execvp failed for %q: %s (errno %d)", file, errmsg, errnum), errnum
+
+    -- We cannot return the exec error to the parent because the parent has
+    -- already returned the PID. Exit with 127, matching the conventional
+    -- shell status for "command not found"/exec failure.
+    io.stderr:write(string.format("execvp failed for %q: %s (errno %d)\n", file, errmsg, errnum))
+
+    luaSysBridge.exit(127)
 end
 
 --- Suspend execution for a given number of seconds (POSIX).
