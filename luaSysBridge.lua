@@ -3378,21 +3378,24 @@ end
 --- Typical use-case: scripts named "ab0_fzf", "ai_fzf", "ab1_fzf" that
 --- should list and launch sibling scripts with the same prefix.
 ---
---- @param prefix  string   Prefix used for matching (e.g. "ab0", "ai")
---- @param dir     string   Directory that contains the scripts
---- @param prompt  string   Prompt shown by fzf
---- @param mode    string|nil  "execvp" (default) or "exec"
----                            - "execvp" -> replaces current process (never returns on success)
----                            - "exec"   -> runs via os.execute / luaSysBridge.execute and returns
---- @param opts    table|nil  Extra options passed directly to luaSysBridge.fzf()
----                           (height, reverse, multi, preview, header, ...)
+--- @param prefix   string        Prefix used for matching (e.g. "ab0", "ai")
+--- @param dir      string        Directory that contains the scripts
+--- @param prompt   string        Prompt shown by fzf
+--- @param mode     string|nil    "execvp" (default) or "exec"
+---                               - "execvp" -> replaces current process (never returns on success)
+---                               - "exec"   -> runs via os.execute / luaSysBridge.execute and returns
+--- @param opts     table|nil     Extra options passed directly to luaSysBridge.fzf()
+---                               (height, reverse, multi, preview, header, ...)
+--- @param excludes table|false|nil  Optional list of exact names to exclude from selection
+---                                  (default = false / nil → no exclusions)
 ---
 --- @return boolean|nil, string|nil
 ---   - mode "execvp": never returns on success; on failure returns nil + error
 ---   - mode "exec"  : returns success (boolean), error message (or nil)
-function luaSysBridge.fzf_select_and_run(prefix, dir, prompt, mode, opts)
+function luaSysBridge.fzf_select_and_run(prefix, dir, prompt, mode, opts, excludes)
     opts = opts or {}
     mode = mode or "execvp"
+    excludes = excludes or false
 
     if type(prefix) ~= "string" or prefix == "" then
         return nil, "fzf_select_and_run(): prefix must be a non-empty string"
@@ -3406,13 +3409,17 @@ function luaSysBridge.fzf_select_and_run(prefix, dir, prompt, mode, opts)
     if mode ~= "execvp" and mode ~= "exec" then
         return nil, 'fzf_select_and_run(): mode must be "execvp" or "exec"'
     end
+    if excludes ~= false and excludes ~= nil and type(excludes) ~= "table" then
+        return nil, "fzf_select_and_run(): excludes must be a table, false or nil"
+    end
 
     if not luaSysBridge.exists_directory(dir) then
         return nil, "fzf_select_and_run(): directory does not exist: " .. dir
     end
 
     ----------------------------------------------------------------
-    -- Build candidate list (exclude the calling script itself)
+    -- Build candidate list (exclude the calling script itself
+    -- and anything listed in the excludes table)
     ----------------------------------------------------------------
     local current_basename = luaSysBridge.basename(arg and arg[0] or "")
     local candidates = luaSysBridge.find(dir, prefix .. "*") or {}
@@ -3420,7 +3427,18 @@ function luaSysBridge.fzf_select_and_run(prefix, dir, prompt, mode, opts)
     local scripts = {}
     for _, name in ipairs(candidates) do
         if name ~= current_basename then
-            scripts[#scripts + 1] = name
+            local excluded = false
+            if type(excludes) == "table" then
+                for _, excl in ipairs(excludes) do
+                    if name == excl then
+                        excluded = true
+                        break
+                    end
+                end
+            end
+            if not excluded then
+                scripts[#scripts + 1] = name
+            end
         end
     end
 
