@@ -1014,6 +1014,14 @@ function luaSysBridge.kill(pid, signal)
     end
 end
 
+function luaSysBridge.trim(s)
+    return (s or ""):gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+function luaSysBridge.shquote(s)
+    return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
+end
+
 --- Read the contents of one or more files, equivalent to the Unix `cat` command.
 --- Concatenates the contents of all given files in the order provided (no extra separators).
 --- Compatible with Lua 5.1–5.4 and LuaJIT.
@@ -1085,7 +1093,7 @@ function luaSysBridge.cat(path_or_paths, opts)
     local result = table.concat(contents)
 
     if trim then
-        result = result:match("^%s*(.-)%s*$") or ""
+        result = luaSysBridge.trim(result)
     end
 
     return result
@@ -1642,14 +1650,6 @@ function luaSysBridge.ssh_table_load_config(path)
 
     local target = path or default
 
-    -- Utilities
-    local function trim(s)
-        if not s then
-            return s
-        end
-        return (s:gsub("^%s+", ""):gsub("%s+$", ""))
-    end
-
     local function split_once(s)
         -- split on first whitespace sequence
         if not s then
@@ -1660,7 +1660,7 @@ function luaSysBridge.ssh_table_load_config(path)
             return nil, nil
         end
         rest = rest or ""
-        rest = trim(rest)
+        rest = luaSysBridge.trim(rest)
         return key, rest
     end
 
@@ -1766,7 +1766,7 @@ function luaSysBridge.ssh_table_load_config(path)
                 i = i + 1
             end
             line = table.concat(outchars)
-            line = trim(line)
+            line = luaSysBridge.trim(line)
             if line ~= "" then
                 -- Handle continuation lines ending with '\'
                 while line:match("\\%s*$") do
@@ -1794,7 +1794,7 @@ function luaSysBridge.ssh_table_load_config(path)
                         table.insert(outc, ch2)
                         j = j + 1
                     end
-                    cont = trim(table.concat(outc))
+                    cont = luaSysBridge.trim(table.concat(outc))
                     line = line .. " " .. cont
                 end
 
