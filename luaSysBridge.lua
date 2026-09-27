@@ -3325,7 +3325,7 @@ function luaSysBridge.fzf(options, opts)
     local f = io.open(tmp, "w")
     if not f then
         if preview_script_path then
-            os.remove(preview_script_path)
+            luaSysBridge.remove(preview_script_path)
         end
         return nil
     end
@@ -3336,18 +3336,18 @@ function luaSysBridge.fzf(options, opts)
     local full_cmd = string.format("%s < %s", cmd, shell_quote(tmp))
     local pipe = io.popen(full_cmd, "r")
     if not pipe then
-        os.remove(tmp)
+        luaSysBridge.remove(tmp)
         if preview_script_path then
-            os.remove(preview_script_path)
+            luaSysBridge.remove(preview_script_path)
         end
         return nil
     end
 
     local output = pipe:read("*a") or ""
     pipe:close()
-    os.remove(tmp)
+    luaSysBridge.remove(tmp)
     if preview_script_path then
-        os.remove(preview_script_path)
+        luaSysBridge.remove(preview_script_path)
     end
 
     output = output:gsub("\n+$", "")
@@ -3546,13 +3546,13 @@ function luaSysBridge.yaml_write_file(yaml_file, tbl, opts)
     fh:close()
 
     if not ok then
-        os.remove(tmp_file)
+        luaSysBridge.remove(tmp_file)
         return false, "yaml_write_file(): write failed: " .. tostring(write_err)
     end
 
     local rename_ok, rename_err = os.rename(tmp_file, yaml_file)
     if not rename_ok then
-        os.remove(tmp_file)
+        luaSysBridge.remove(tmp_file)
         return false, string.format("yaml_write_file(): failed to rename %s → %s: %s", tmp_file, yaml_file, tostring(rename_err))
     end
 
@@ -3913,7 +3913,7 @@ function luaSysBridge.http_download(url, dest_path, opts)
     f:close()
 
     if not ok then
-        os.remove(dest_path)
+        luaSysBridge.remove(dest_path)
         return nil, "download failed: " .. tostring(err2)
     end
     return true
