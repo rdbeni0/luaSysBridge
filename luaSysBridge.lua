@@ -310,6 +310,57 @@ function luaSysBridge.sleep(seconds)
     return true
 end
 
+--- Return the current effective user name (login name) of the calling process.
+--- Uses LUAPOSIX only (no external processes / no `whoami`).
+---
+--- Resolution order:
+---   1. posix.unistd.getuid() + posix.pwd.getpwuid(uid) -> pw_name
+---   2. Fallbacks: $USER, $LOGNAME, $USERNAME environment variables
+---   3. Numeric uid as a string (as last resort)
+---
+--- Compatible with Lua 5.1–5.4 and LuaJIT.
+---
+--- @return string|nil username  Current user name on success, nil on hard failure
+--- @return string|nil err       Error message when the name could not be resolved
+function luaSysBridge.whoami()
+    -- Preferred path: resolve via LUAPOSIX (uid -> pw_name)
+    local ok_unistd, unistd = pcall(require, "posix.unistd")
+    local ok_pwd, pwd = pcall(require, "posix.pwd")
+
+    if ok_unistd and unistd and type(unistd.getuid) == "function" then
+        local uid = unistd.getuid()
+        if type(uid) == "number" then
+            if ok_pwd and pwd and type(pwd.getpwuid) == "function" then
+                local pw = pwd.getpwuid(uid)
+                if pw and pw.pw_name and pw.pw_name ~= "" then
+                    return pw.pw_name
+                end
+            end
+
+            -- Fallback #1: environment variables
+            for _, var in ipairs({ "USER", "LOGNAME", "USERNAME" }) do
+                local v = luaSysBridge.getenv(var)
+                if v and v ~= "" then
+                    return v
+                end
+            end
+
+            -- Fallback #2: numeric uid as a string
+            return tostring(uid)
+        end
+    end
+
+    -- LUAPOSIX not available: try env vars directly
+    for _, var in ipairs({ "USER", "LOGNAME", "USERNAME" }) do
+        local v = luaSysBridge.getenv(var)
+        if v and v ~= "" then
+            return v
+        end
+    end
+
+    return nil, "whoami(): cannot determine current user (LUAPOSIX not available and no USER/LOGNAME/USERNAME env var set)"
+end
+
 --- Create a new process by duplicating the current one (POSIX fork).
 --- Compatible with Lua 5.1–5.4 and LuaJIT.
 --- Uses LUAPOSIX posix.unistd.fork.
@@ -557,7 +608,8 @@ function luaSysBridge.link_unlink(link_path)
     local ret, errstr, errnum = unistd.unlink(link_path)
 
     if ret ~= 0 then
-        return nil, string.format("Failed to unlink: %s (errstr: %s, errnum: %s)", link_path, errstr or "unknown error", tostring(errnum or "unknown"))
+        return nil,
+            string.format("Failed to unlink: %s (errstr: %s, errnum: %s)", link_path, errstr or "unknown error", tostring(errnum or "unknown"))
     end
 
     return true
@@ -615,7 +667,15 @@ function luaSysBridge.link_link(src, dst, symlink)
 
     if ret ~= 0 then
         local kind = soft and "symlink" or "hardlink"
-        return nil, string.format("Failed to create %s: %s -> %s (errstr: %s, errnum: %s)", kind, dst, src, errstr or "unknown error", tostring(errnum or "unknown"))
+        return nil,
+            string.format(
+                "Failed to create %s: %s -> %s (errstr: %s, errnum: %s)",
+                kind,
+                dst,
+                src,
+                errstr or "unknown error",
+                tostring(errnum or "unknown")
+            )
     end
 
     return true
@@ -908,7 +968,8 @@ function luaSysBridge.stdio_to_devnull(options)
 
     local fd, errstr, errnum = fcntl.open("/dev/null", fcntl.O_RDWR)
     if not fd then
-        return false, string.format("stdio_to_devnull: cannot open /dev/null: %s (errno %s)", errstr or "unknown error", tostring(errnum or "unknown"))
+        return false,
+            string.format("stdio_to_devnull: cannot open /dev/null: %s (errno %s)", errstr or "unknown error", tostring(errnum or "unknown"))
     end
 
     local first_err = nil
@@ -1644,7 +1705,7 @@ end
 --- @return nil err Returns nil plus an error message string on failure.
 function luaSysBridge.ssh_table_load_config(path)
     -- Helper: safe getenv and default to HOME/.ssh/config
-    local getenv = os.getenv
+    local getenv = luaSysBridge.getenv
     local home = getenv and getenv("HOME") or nil
     local default = (home and (home .. "/.ssh/config")) or ".ssh/config"
 
@@ -1911,7 +1972,7 @@ function luaSysBridge.pwd_os_pwd()
     local unistd = require("posix.unistd")
     path = unistd.getcwd()
     if not path then
-        path = os.getenv("PWD")
+        path = luaSysBridge.getenv("PWD")
     end
     return path or "."
 
@@ -1993,7 +2054,12 @@ end
 --- @return table destination The merged destination table.
 function luaSysBridge.table_deep_merge(destination, source)
     for key, value in pairs(source) do
-        if type(value) == "table" and type(destination[key]) == "table" and not luaSysBridge.table_is_array(value) and not luaSysBridge.table_is_array(destination[key]) then
+        if
+            type(value) == "table"
+            and type(destination[key]) == "table"
+            and not luaSysBridge.table_is_array(value)
+            and not luaSysBridge.table_is_array(destination[key])
+        then
             -- Both are maps -> recurse
             luaSysBridge.table_deep_merge(destination[key], value)
         else
