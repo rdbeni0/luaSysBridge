@@ -65,7 +65,20 @@ end
 ---
 ---   Note: background mode does NOT detach stdin/stdout/stderr. The child
 ---   inherits the parent's file descriptors, just like a normal shell
----   background process unless the shell redirects them.
+---   background process unless the shell redirects them (or debug is set).
+---
+--- Debug (optional 4th argument):
+---   When truthy, redirects the process's stdout and stderr to a log file
+---   *before* the exec. This works in both foreground and background modes
+---   (in the child for background).
+---
+---     debug = false / nil  → no redirect (default)
+---     debug = true         → /tmp/execvp.log
+---     debug = "/path/to.log" → that path (string)
+---
+---   The file is opened O_WRONLY|O_CREAT|O_APPEND (mode 0644). A short
+---   header with timestamp and command is written, then stdout+stderr are
+---   dup2'd onto the fd.
 ---
 --- Uses LUAPOSIX posix.unistd.execp which performs PATH search when `file`
 --- contains no slash.
@@ -100,13 +113,18 @@ end
 --- 4. Background:
 ---      local pid, err = luaSysBridge.execvp("emacs", {}, true)
 ---
+--- 5. With debug log (foreground or background):
+---      luaSysBridge.execvp("serena", {"start-mcp-server"}, false, true)
+---      luaSysBridge.execvp("serena", {"start-mcp-server"}, false, "/tmp/serena.log")
+---
 --- @param file string Program name or path. If it contains no '/', PATH is searched.
 --- @param args table Argument vector. May start from the first real argument or contain key 0.
 --- @param background boolean|nil If true, fork and execute in the child.
+--- @param debug boolean|string|nil Optional. false/nil = off; true = /tmp/execvp.log; string = path.
 --- @return integer|nil, string|nil, integer|nil
 ---         Foreground: never returns on success; on failure: nil, errmsg, errnum
 ---         Background: pid, nil, nil on success; nil, errmsg, errnum on fork failure
-function luaSysBridge.execvp(file, args, background)
+function luaSysBridge.execvp(file, args, background, debug)
     if type(file) ~= "string" or file == "" then
         return nil, "execvp(): file must be a non-empty string"
     end
@@ -119,6 +137,16 @@ function luaSysBridge.execvp(file, args, background)
         background = false
     elseif type(background) ~= "boolean" then
         return nil, "execvp(): background must be a boolean"
+    end
+
+    -- Normalize debug → log path or nil
+    local debug_path = nil
+    if debug == true then
+        debug_path = "/tmp/execvp.log"
+    elseif type(debug) == "string" and debug ~= "" then
+        debug_path = debug
+    elseif debug ~= nil and debug ~= false then
+        return nil, "execvp(): debug must be boolean or non-empty string path"
     end
 
     for _, v in pairs(args) do
@@ -159,12 +187,55 @@ function luaSysBridge.execvp(file, args, background)
     end
 
     local unistd = require("posix.unistd")
+    local fcntl = require("posix.fcntl")
+
+    ---------------------------------------------------------------------------
+    -- Helper: redirect stdout + stderr to debug log (called in the process
+    -- that is about to exec, i.e. foreground or child of background).
+    ---------------------------------------------------------------------------
+    local function apply_debug_redirect()
+        if not debug_path then
+            return true
+        end
+
+        local flags = fcntl.O_WRONLY + fcntl.O_CREAT + fcntl.O_APPEND
+        local fd, errstr, errnum = fcntl.open(debug_path, flags, 420) -- 0644
+        if not fd then
+            -- Best-effort: don't abort the whole exec just because the log
+            -- could not be opened; write a note to the *current* stderr.
+            io.stderr:write(string.format(
+                "execvp(): cannot open debug log %q: %s (errno %s) – continuing without redirect\n",
+                debug_path, errstr or "unknown", tostring(errnum or "?")))
+            return false
+        end
+
+        -- Short header so multiple runs are separable
+        local header = string.format(
+            "\n===== execvp debug %s  file=%q  argv0=%q =====\n",
+            os.date("%Y-%m-%d %H:%M:%S"), file, tostring(argv[0] or file))
+        unistd.write(fd, header)
+
+        local ok1 = unistd.dup2(fd, 1) -- stdout
+        local ok2 = unistd.dup2(fd, 2) -- stderr
+        if fd > 2 then
+            unistd.close(fd)
+        end
+
+        if ok1 == nil or ok2 == nil then
+            io.stderr:write(string.format(
+                "execvp(): dup2 to debug log %q failed – continuing\n", debug_path))
+            return false
+        end
+        return true
+    end
 
     ---------------------------------------------------------------------------
     -- Foreground mode
     ---------------------------------------------------------------------------
 
     if not background then
+        apply_debug_redirect()
+
         -- Performs PATH search like C execvp().
         --
         -- Never returns on success.
@@ -202,7 +273,8 @@ function luaSysBridge.execvp(file, args, background)
     ---------------------------------------------------------------------------
 
     -- pid == 0 means we are in the child.
-    --
+    apply_debug_redirect()
+
     -- execp() replaces this process. If it succeeds, this code never
     -- returns. If it fails, terminate only the child process.
     local _, errstr, errnum = unistd.execp(file, argv)
